@@ -1,0 +1,10 @@
+<databaselist>
+<database id="jdbc:mysql://localhost:3306/tigress_challenge">
+	<address>jdbc:mysql://localhost:3306/tigress_challenge</address>
+	<username>pillar</username>
+	<password>e6Zpf3vDL44GuVcv</password>
+	<driver>com.mysql.jdbc.Driver</driver>
+	<maxconnections>100</maxconnections>
+	<name>pillar</name>
+</database>
+</databaselist>

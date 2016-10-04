@@ -1,0 +1,12 @@
+<commandlist>
+<command name="restartServer">
+	<name>restartServer</name>
+	<runtimecode>cmd /c start C:\xampp\tomcat\catalina_restart.bat</runtimecode>
+	<description>This resets the web server.</description>
+</command>
+<command name="refreshKeystore">
+	<name>refreshKeystore</name>
+	<runtimecode>refreshkeystore</runtimecode>
+	<description>This makes a new key for encryption.</description>
+</command>
+</commandlist>
