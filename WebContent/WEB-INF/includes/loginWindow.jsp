@@ -34,7 +34,7 @@ if(!hasUser)
     </form>
     <tr>
     	<td>
-        	<div align="center">Not a member?  Sign up <a href="#">here</a>.</div>
+        	<div align="center">Not a member?  Request an account <a href="signUp.jsp">here</a>.</div>
         </td>
     </tr>
 </table>

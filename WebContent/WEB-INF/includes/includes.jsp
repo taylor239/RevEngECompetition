@@ -15,7 +15,9 @@
 	
 	ConcurrentHashMap roleMap=null;
 	ArrayList roleList=null;
-	
+%>
+<meta generatedAt="<%=today.toString() %>">
+<%
 	if(protect)
 	{
 		//System.out.println("protecting");
@@ -46,6 +48,10 @@
 %>
 
 <%@include file="functionLibrary.jsp" %>
+
+<%@include file="addCommandScript.jsp" %>
+
+<%@include file="addUserScript.jsp" %>
 
 <%@include file="style.jsp" %>
 

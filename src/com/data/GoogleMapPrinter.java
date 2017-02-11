@@ -10,6 +10,8 @@ public class GoogleMapPrinter
 		String myReturn="";
 		String formedAddress=street+" "+city+" "+province+" "+postal+" "+country;
 		String source="https://www.google.com/maps/embed/v1/place?";
+		
+		
 		myReturn+="<iframe width=\""+width+"\" height=\""+height+"\" frameborder=\"0\" style=\"border:0\" src=\""+source;
 		try
 		{

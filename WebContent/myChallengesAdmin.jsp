@@ -65,7 +65,7 @@
         <table class="news_item_table" width="100%">
         <tr>
         <%
-        if(myUser.getAttribute("role").equals("admin") && false)
+        if(myUser.getAttribute("role").equals("admin"))
         {
         %>
         <td>
@@ -111,7 +111,7 @@
         <table class="news_item_table" width="100%">
         <tr>
         <%
-        if(myUser.getAttribute("role").equals("admin") && false)
+        if(myUser.getAttribute("role").equals("admin"))
         {
         %>
         <td width="33.3%">
@@ -156,7 +156,7 @@
         	<meta http-equiv="refresh" content="0; url=index.jsp" />
         	<%
         }
-        else if(myUser.getAttribute("role").equals("student") || myUser.getAttribute("role").equals("admin"))
+        else if(myUser.getAttribute("role").equals("student"))
         {
         ArrayList myChallenges = myConnector.getChallenges((String)myUser.getAttribute("email"));
         if(verbose)
@@ -245,7 +245,7 @@
         <%
         }
         }
-        else if(myUser.getAttribute("role").equals("admin") && false)
+        else if(myUser.getAttribute("role").equals("admin"))
         {
         	ArrayList myChallenges = myConnector.getAdminChallenges((String)myUser.getAttribute("email"));
         	if(verbose)

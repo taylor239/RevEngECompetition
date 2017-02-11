@@ -3,10 +3,7 @@
 <div align="center">
   <table width="100%" border="0" id="top_nav_table">
     <tr>
-      <td class="top_button" onclick="window.document.location='http://tigress.cs.arizona.edu/';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">About Tigress</td>
-      <td class="top_button" onclick="window.document.location='search.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">Contact</td>
-      <td class="top_button" onclick="window.document.location='myChallenges.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">My Challenges</td>
-      <td class="top_button" id="title_image" onclick="window.document.location='<%
+      <td class="top_button" onclick="window.document.location='<%
 	  if(hasUser)
 	  {
 		out.print("index.jsp");  
@@ -15,7 +12,100 @@
 	  {
 		  out.print("index.jsp"); 
 	  }
-	  %>';" onMouseOver="highlight(this)" onMouseOut="unhighlightTitle(this)"><img height="60em" src="img/tigress-gray.png" /></td>
+	  %>';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)"><!-- <img height="60em" src="img/tigress-gray.png" />-->Home</td>
+      <td class="top_button" onclick="window.document.location='about.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">
+      About
+        <ul onclick="event.stopPropagation();">
+		<li onclick="window.document.location='http://tigress.cs.arizona.edu/';">
+		Tigress
+		</li>
+		<li onclick="window.document.location='contact.jsp';">
+		Contact
+		</li>
+		</ul>
+      </td>
+      <%
+      if(hasUser)
+      {
+      %>
+      <td class="top_button" onclick="window.document.location='myChallenges.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">
+      For Students
+        <ul onclick="event.stopPropagation();">
+		<li onclick="window.document.location='myChallenges.jsp';">
+		View Assignments
+		</li>
+		<li onclick="window.document.location='reversing.jsp';">
+		Tools
+		</li>
+		</ul>
+      </td>
+      <%
+      }
+      else
+      {
+      %>
+      <td class="top_button" onclick="window.document.location='studentInfo.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">
+      For Students
+        <ul onclick="event.stopPropagation();">
+		<li onclick="window.document.location='myChallenges.jsp';">
+		View Assignments
+		</li>
+		<li onclick="window.document.location='reversing.jsp';">
+		Tools
+		</li>
+		</ul>
+      </td>
+      <%
+      }
+      %>
+	   <%
+      if(hasUser)
+      {
+      %>
+      <td class="top_button" onclick="window.document.location='reversing.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">
+      For Instructors
+      <ul onclick="event.stopPropagation();">
+		
+		<li onclick="window.document.location='quickCreate.jsp';">Quick Challenge</li>
+		
+		<li onclick="window.document.location='makeNew.jsp';">Create Challenge</li>
+		
+		<li onclick="window.document.location='myChallengesAdmin.jsp';">
+		View Challenges
+		</li>
+		
+		<li onclick="window.document.location='manageStudents.jsp';">Manage Students</li>
+		
+		<li onclick="window.document.location='addStudents.jsp';">Add Students</li>
+		
+		</ul>
+      </td>
+      <%
+      }
+      else
+      {
+      %>
+      <td class="top_button" onclick="window.document.location='reversing.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">
+      For Instructors
+      <ul onclick="event.stopPropagation();">
+		
+		<li onclick="window.document.location='quickCreate.jsp';">Quick Challenge</li>
+		
+		<li onclick="window.document.location='makeNew.jsp';">Create Challenge</li>
+		
+		<li onclick="window.document.location='myChallengesAdmin.jsp';">
+		View Challenges
+		</li>
+		
+		<li onclick="window.document.location='manageStudents.jsp';">Manage Students</li>
+		
+		<li onclick="window.document.location='addStudents.jsp';">Add Students</li>
+		
+		</ul>
+      </td>
+      <%
+      }
+      %>
       <td class="top_button" onclick="window.document.location='<%
 	  if(hasUser)
 	  {
@@ -23,7 +113,7 @@
 	  }
 	  else
 	  {
-		  out.print("index.jsp");
+		  out.print("loginUser.jsp");
 	  }
 	  %>';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)"><%
 	  if(hasUser)
@@ -35,11 +125,6 @@
 		  out.print("Login");
 	  }
 	  %></td>
-      <td class="top_button" onclick="window.document.location='reversing.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">Reversing Tools</td>
-      <td class="top_button"><form id="searchform" name="searchform" method="GET" action="search.jsp">
-          <input type="text" class="searchbox" name="search_site" id="search_site" value="Search site" onclick="clearText(this)" />
-        <input type="submit" class="submit" name="search_site_submit" id="search_site_submit" value="Search" />
-      </form></td>
     </tr>
   </table>
   </div>

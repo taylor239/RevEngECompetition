@@ -11,7 +11,6 @@
 <body>
 <%@include file="./WEB-INF/includes/mainPane.jsp" %>
 <table id="inner_content">
-	<!--
 	<tr>
     	<td colspan="3" class="no_bottom_padding">
     	<div align="center">
@@ -47,10 +46,8 @@
         </div>
         </td>
     </tr>
-    -->
 	<tr>
-    	<td width="10%">
-    	<!--
+    	<td width="25%">
         <table class="inner_content_table">
         <tr>
         <td>
@@ -65,8 +62,10 @@
         <table class="news_item_table" width="100%">
         <tr>
         <%
-        if(myUser.getAttribute("role").equals("admin") && false)
+        if(myUser.getAttribute("role").equals("admin"))
         {
+        	String toDelete = (String)request.getParameter("challengeName");
+        	myConnector.deleteChallenge(toDelete, (String)myUser.getAttribute("email"));
         %>
         <td>
         <div align="center">
@@ -92,50 +91,7 @@
         </tr>
         </table>
         </td>
-        -->
-        <td width="80%">
-        <table class="inner_content_table">
-        <!--
-        <tr>
-        <td>
-        <table class="news_table" width="100%">
-        <tr class="title_general">
-        <td colspan="3" align="center">
-        <div align="center">
-        Options
-        </div>
-        </td>
-    	</tr>
-    	<tr colspan="2" width="100%:">
-        <td>
-        <table class="news_item_table" width="100%">
-        <tr>
-        <%
-        if(myUser.getAttribute("role").equals("admin") && false)
-        {
-        %>
-        <td width="33.3%">
-        <div align="center">
-        <a href="makeNew.jsp">Challenge Quick Start</a><br></br>
-        </div>
-        </td>
-        <td width="33.4%">
-        <div align="center">
-        <a href="makeNew.jsp">Make New Challenge</a><br></br>
-        </div>
-        </td>
-        <%
-        }
-        %>
-        </tr>
-        </table>
-        </td>
-        </tr>
-    	</table>
-        </td>
-        </tr>
-        </table>
-        -->
+        <td width="50%">
         <table class="inner_content_table">
         <tr>
         <td>
@@ -156,7 +112,7 @@
         	<meta http-equiv="refresh" content="0; url=index.jsp" />
         	<%
         }
-        else if(myUser.getAttribute("role").equals("student") || myUser.getAttribute("role").equals("admin"))
+        else if(myUser.getAttribute("role").equals("student"))
         {
         ArrayList myChallenges = myConnector.getChallenges((String)myUser.getAttribute("email"));
         if(verbose)
@@ -245,7 +201,7 @@
         <%
         }
         }
-        else if(myUser.getAttribute("role").equals("admin") && false)
+        else if(myUser.getAttribute("role").equals("admin"))
         {
         	ArrayList myChallenges = myConnector.getAdminChallenges((String)myUser.getAttribute("email"));
         	if(verbose)
@@ -359,8 +315,7 @@
         </tr>
         </table>
         </td>
-        <td width="10%">
-        <!--
+        <td width="25%">
         <table class="inner_content_table">
         <tr>
         <td>
@@ -419,7 +374,6 @@
         </td>
         </tr>
         </table>
-        -->
         </td>
     </tr>
 </table>

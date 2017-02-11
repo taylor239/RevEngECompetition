@@ -367,6 +367,131 @@ public class DatabaseConnector
 	/**
 	 * 
 	 * @param username
+	 * @return
+	 */
+	public synchronized ArrayList getAdminChallenges(String username)
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge WHERE challenge.admin_email = ?");
+			myStmt.setString(1, username);
+			ResultSet myResults=myStmt.executeQuery();
+			disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			return null;
+		}
+		disconnect();
+		return myReturn;
+	}
+	
+	/**
+	 * 
+	 * @param username
+	 * @return
+	 */
+	public synchronized ArrayList getAdminStudents(String username)
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM user INNER JOIN role ON user.email = role.email WHERE role.administrator = ? ORDER BY role.course");
+			myStmt.setString(1, username);
+			ResultSet myResults=myStmt.executeQuery();
+			disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			return null;
+		}
+		disconnect();
+		return myReturn;
+	}
+	
+	
+	/**
+	 * 
+	 * @param username
 	 * @param password
 	 * @return
 	 */
@@ -389,6 +514,69 @@ public class DatabaseConnector
 		{
 			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge_participant INNER JOIN challenge ON challenge_participant.challenge_name = challenge.challenge_name WHERE challenge_participant.email = ?");
 			myStmt.setString(1, username);
+			ResultSet myResults=myStmt.executeQuery();
+			disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			return null;
+		}
+		disconnect();
+		return myReturn;
+	}
+	
+	/**
+	 * 
+	 * @param username
+	 * @return
+	 */
+	public synchronized ArrayList getChallengeAssignment(String username, String challengeName)
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM `challenge_participant` INNER JOIN `challenge` ON `challenge`.`challenge_name` = `challenge_participant`.`challenge_name` INNER JOIN `role` ON `challenge_participant`.`email` = `role`.`email` WHERE `challenge`.`admin_email` = ? AND `challenge`.`challenge_name` = ? ORDER BY `role`.`course`");
+			myStmt.setString(1, username);
+			myStmt.setString(2, challengeName);
 			ResultSet myResults=myStmt.executeQuery();
 			disconnect();
 			ResultSetMetaData meta=myResults.getMetaData();
@@ -479,10 +667,487 @@ public class DatabaseConnector
 		catch(Exception e)
 		{
 			disconnect();
+			e.printStackTrace();
 			return null;
 		}
 		disconnect();
 		return myReturn;
+	}
+	
+	public synchronized ArrayList getChallengeSubmission(String challengeName, String email)
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM `challenge_participant` WHERE `challenge_name`=? AND `email`=?");
+			myStmt.setString(1, challengeName);
+			myStmt.setString(2, email);
+			ResultSet myResults=myStmt.executeQuery();
+			disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return null;
+		}
+		disconnect();
+		return myReturn;
+	}
+	
+	public synchronized ArrayList getChallengeSubmissions(String challengeName)
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM `challenge_participant` WHERE `challenge_name`=?");
+			myStmt.setString(1, challengeName);
+			ResultSet myResults=myStmt.executeQuery();
+			disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return null;
+		}
+		disconnect();
+		return myReturn;
+	}
+	
+	public synchronized ArrayList getChallengeDefaults()
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge_default INNER JOIN challenge_command_default ON challenge_default.challenge_name = challenge_command_default.challenge_name ORDER BY challenge_command_default.command_order ASC");
+			//myStmt.setString(1, username);
+			ResultSet myResults=myStmt.executeQuery();
+			disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				if(verbose)
+				{
+					System.out.println("Got a result");
+				}
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			return null;
+		}
+		disconnect();
+		return myReturn;
+	}
+	
+	public synchronized ArrayList getChallengeDefault(String challengeName)
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge_default INNER JOIN challenge_command_default ON challenge_default.challenge_name = challenge_command_default.challenge_name WHERE challenge_default.challenge_name = ? ORDER BY challenge_command_default.command_order ASC");
+			myStmt.setString(1, challengeName);
+			ResultSet myResults=myStmt.executeQuery();
+			disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				if(verbose)
+				{
+					System.out.println("Got a result");
+				}
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			return null;
+		}
+		disconnect();
+		return myReturn;
+	}
+	
+	public synchronized ArrayList getChallengeEvaluation(String challengeName, String email)
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge INNER JOIN challenge_evaluate_command ON challenge.challenge_name = challenge_evaluate_command.challenge_name INNER JOIN challenge_participant ON challenge.challenge_name = challenge_participant.challenge_name WHERE challenge.challenge_name = ? AND challenge_participant.email = ? ORDER BY challenge_evaluate_command.command_order ASC");
+			myStmt.setString(1, challengeName);
+			myStmt.setString(2, email);
+			ResultSet myResults=myStmt.executeQuery();
+			disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			return null;
+		}
+		disconnect();
+		return myReturn;
+	}
+	
+	public void assignChallenge(String challengeName, String email)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge_participant`(`challenge_name`, `email`) VALUES (?,?)");
+			myStmt.setString(1, challengeName);
+			myStmt.setString(2, email);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public void unassignChallenge(String challengeName, String email)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("DELETE FROM `challenge_participant` WHERE `challenge_name`=? AND `email`=?");
+			myStmt.setString(1, challengeName);
+			myStmt.setString(2, email);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public boolean updateChallenge(String prevName, String newName, String openTime, String endTime, String description)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("UPDATE `challenge` SET `challenge_name`=?,`open_time`=?,`end_time`=?,`description`=? WHERE `challenge_name`=?");
+			myStmt.setString(1, newName);
+			myStmt.setString(2, openTime);
+			myStmt.setString(3, endTime);
+			myStmt.setString(4, description);
+			myStmt.setString(5, prevName);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return false;
+		}
+		disconnect();
+		return true;
+	}
+	
+	public boolean setGrade(String challenge, String email, String grade)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("UPDATE `challenge_participant` SET `grade`=? WHERE `challenge_name`=? AND `email`=?");
+			myStmt.setString(1, grade);
+			myStmt.setString(2, challenge);
+			myStmt.setString(3, email);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return false;
+		}
+		disconnect();
+		return true;
+	}
+	
+	public boolean createChallenge(String newName, String openTime, String endTime, String description, String email)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge`(`challenge_name`, `open_time`, `end_time`, `description`, `admin_email`) VALUES (?,?,?,?,?)");
+			myStmt.setString(1, newName);
+			myStmt.setString(2, openTime);
+			myStmt.setString(3, endTime);
+			myStmt.setString(4, description);
+			myStmt.setString(5, email);
+			
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return false;
+		}
+		disconnect();
+		assignChallenge(newName, email);
+		return true;
+	}
+	
+	public void deleteCommands(String prevChallengeName)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("DELETE FROM `challenge_command` WHERE `challenge_name` = ?");
+			myStmt.setString(1, prevChallengeName);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public void deleteChallenge(String prevChallengeName, String email)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("DELETE FROM `challenge` WHERE `challenge_name` = ? AND `admin_email` = ?");
+			myStmt.setString(1, prevChallengeName);
+			myStmt.setString(2, email);
+			
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public void addCommand(String commandOrder, String commandName, String command, String challengeName)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge_command`(`command_order`, `commandName`, `command`, `challenge_name`) VALUES (?, ?, ?, ?)");
+			myStmt.setString(1, commandOrder);
+			myStmt.setString(2, commandName);
+			myStmt.setString(3, command);
+			myStmt.setString(4, challengeName);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	
+	public void deleteUser(String email)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("DELETE FROM `user` WHERE `email`=?");
+			myStmt.setString(1, email);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
 	}
 	
 	/**
@@ -780,6 +1445,41 @@ public class DatabaseConnector
 		disconnect();
 	}
 	
+	public synchronized void writeUserRequest(String userName, String email, String fname, String mname, String lname, String pass, String message, String type)
+	{
+		String salt = UUID.randomUUID().toString();
+		
+		String stmt="INSERT INTO `user_request` (`username`, `email`, `password`, `fName`, `mName`, `lName`, `lastLogon`, `currentVisit`, `previousVisit`, `loginIP`, `salt`, `changeIP`, `changeURL`, `changeUserEmail`, `displayRealName`, `passwordPlaintext`, `message`, `role`) VALUES (?, ?, SHA2(CONCAT(?, ?), 512), ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '', ?, '', '', '', '0', ?, ?, ?)";
+		//String stmt2="INSERT INTO `role` (`email`, `role`) VALUES (?, ?)";
+		
+		try
+		{
+			getConnection();
+			PreparedStatement myStmt=connection.prepareStatement(stmt);
+			myStmt.setString(1, userName);
+			myStmt.setString(2, email);
+			myStmt.setString(3, pass);
+			myStmt.setString(4, salt);
+			myStmt.setString(5, fname);
+			myStmt.setString(6, mname);
+			myStmt.setString(7, lname);
+			myStmt.setString(8, salt);
+			myStmt.setString(9, pass);
+			myStmt.setString(10, message);
+			myStmt.setString(11, type);
+			
+			myStmt.executeUpdate();
+			myStmt.close();
+		}
+		catch(Exception e)
+		{
+			e.printStackTrace();
+			disconnect();
+			//return;
+		}
+		disconnect();
+	}
+	
 	public synchronized void writeCsvUsers(UserCsvParser myParser)
 	{
 		for(int x=0; x<myParser.emailList.size(); x++)
@@ -833,5 +1533,102 @@ public class DatabaseConnector
 			}
 			disconnect();
 		}
+	}
+	
+	public synchronized void writeCsvUsers(UserCsvParser myParser, String adminEmail)
+	{
+		for(int x=0; x<myParser.emailList.size(); x++)
+		{
+			HashMap tmp=(HashMap) myParser.userMap.get(myParser.emailList.get(x));
+			//System.out.println(tmp.get("fname")+", "+tmp.get("lname")+", "+tmp.get("email")+", "+tmp.get("password"));
+			String stmt="INSERT INTO `user` (`username`, `email`, `password`, `fName`, `mName`, `lName`, `lastLogon`, `currentVisit`, `previousVisit`, `loginIP`, `salt`, `changeIP`, `changeURL`, `changeUserEmail`, `displayRealName`, `passwordPlaintext`) VALUES (?, ?, SHA2(CONCAT(?, ?), 512), ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '', ?, '', '', '', '0', ?)";
+			String stmt2="INSERT INTO `role` (`email`, `role`) VALUES (?, 'student')";
+			String stmt3="INSERT INTO `challenge_participant` (`email`, `challenge_name`) VALUES (?, 'Assignment 1 A')";
+			String stmt4="INSERT INTO `challenge_participant` (`email`, `challenge_name`) VALUES (?, 'Assignment 1 B')";
+			try
+			{
+				getConnection();
+				PreparedStatement myStmt=connection.prepareStatement(stmt);
+				myStmt.setString(1, (String) tmp.get("email"));
+				myStmt.setString(2, (String) tmp.get("email"));
+				myStmt.setString(3, tmp.get("password").toString());
+				myStmt.setString(4, tmp.get("salt").toString());
+				myStmt.setString(5, (String) tmp.get("fname"));
+				myStmt.setString(6, "");
+				myStmt.setString(7, (String) tmp.get("lname"));
+				myStmt.setString(8, (String) tmp.get("salt").toString());
+				myStmt.setString(9, (String) tmp.get("password").toString());
+				
+				PreparedStatement myStmt2=connection.prepareStatement(stmt2);
+				myStmt2.setString(1, (String) tmp.get("email"));
+				
+				PreparedStatement myStmt3=connection.prepareStatement(stmt3);
+				myStmt3.setString(1, (String) tmp.get("email"));
+				
+				PreparedStatement myStmt4=connection.prepareStatement(stmt4);
+				myStmt4.setString(1, (String) tmp.get("email"));
+				
+				myStmt.executeUpdate();
+				myStmt.close();
+				
+				myStmt2.executeUpdate();
+				myStmt2.close();
+				
+				myStmt3.executeUpdate();
+				myStmt3.close();
+				
+				myStmt4.executeUpdate();
+				myStmt4.close();
+			}
+			catch(Exception e)
+			{
+				e.printStackTrace();
+				disconnect();
+				//return;
+			}
+			disconnect();
+		}
+	}
+	
+	public synchronized void writeUser(String username, String email, String fname, String mname, String lname, String password, String role, String administrator, String courseName)
+	{
+		courseName = courseName.replaceAll(" ", "_");
+		String salt = UUID.randomUUID().toString();
+		//System.out.println(tmp.get("fname")+", "+tmp.get("lname")+", "+tmp.get("email")+", "+tmp.get("password"));
+		String stmt="INSERT INTO `user` (`username`, `email`, `password`, `fName`, `mName`, `lName`, `lastLogon`, `currentVisit`, `previousVisit`, `loginIP`, `salt`, `changeIP`, `changeURL`, `changeUserEmail`, `displayRealName`, `passwordPlaintext`) VALUES (?, ?, SHA2(CONCAT(?, ?), 512), ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '', ?, '', '', '', '0', ?)";
+		String stmt2="INSERT INTO `role` (`email`, `role`, `administrator`, `course`) VALUES (?, ?, ?, ?)";
+		try
+		{
+			getConnection();
+			PreparedStatement myStmt=connection.prepareStatement(stmt);
+			myStmt.setString(1, username);
+			myStmt.setString(2, email);
+			myStmt.setString(3, password);
+			myStmt.setString(4, salt);
+			myStmt.setString(5, fname);
+			myStmt.setString(6, mname);
+			myStmt.setString(7, lname);
+			myStmt.setString(8, salt);
+			myStmt.setString(9, password);
+			
+			PreparedStatement myStmt2=connection.prepareStatement(stmt2);
+			myStmt2.setString(1, email);
+			myStmt2.setString(2, role);
+			myStmt2.setString(3, administrator);
+			myStmt2.setString(4, courseName);
+			
+			myStmt.executeUpdate();
+			myStmt.close();
+			
+			myStmt2.executeUpdate();
+			myStmt2.close();
+		}
+		catch(Exception e)
+		{
+			e.printStackTrace();
+			disconnect();
+			//return;
+		}
+		disconnect();
 	}
 }

@@ -198,7 +198,8 @@ public class ServerManager
 		}
 		Runtime runtime=Runtime.getRuntime();
 		//Process restart=rt.exec("C:/xampp/tomcat/catalina_restart.bat");
-		System.out.println("Environment "+environmentalVars);
+		//System.out.println("Environment "+environmentalVars);
+		System.out.println("In "+dir.getAbsolutePath());
 		System.out.println("Running "+command);
 		Process stopprocess=runtime.exec(command, environmentalVars, dir);
 		BufferedReader stopprocessinput=new BufferedReader(new InputStreamReader(stopprocess.getInputStream()));
@@ -207,10 +208,10 @@ public class ServerManager
 		{
 			myReturn+='\n';
 			myReturn+=line;
-			System.out.println(line);
+			//System.out.println(line);
 		}
 		int exitVal=stopprocess.waitFor();
-		System.out.println("Exited with error code "+exitVal);
+		//System.out.println("Exited with error code "+exitVal);
 		myReturn+='\n';
 		myReturn+="Exited with error code "+exitVal;
 		return myReturn;
@@ -233,8 +234,9 @@ public class ServerManager
 		//Process restart=rt.exec("C:/xampp/tomcat/catalina_restart.bat");
 		for(int x=0; x<environmentalVars.length; x++)
 		{
-			System.out.println("Environment "+environmentalVars[x]);
+			//System.out.println("Environment "+environmentalVars[x]);
 		}
+		System.out.println("In "+dir.getAbsolutePath());
 		for(int x=0; x<command.length; x++)
 		{
 			System.out.println("Command "+command[x]);
@@ -246,19 +248,20 @@ public class ServerManager
 		{
 			myReturn+='\n';
 			myReturn+=line;
-			System.out.println(line);
+			//System.out.println(line);
 		}
 		stopprocessinput=new BufferedReader(new InputStreamReader(stopprocess.getErrorStream()));
 		while((line=stopprocessinput.readLine()) != null)
 		{
 			myReturn+='\n';
 			myReturn+=line;
-			System.out.println(line);
+			//System.out.println(line);
 		}
 		int exitVal=stopprocess.waitFor();
-		System.out.println("Exited with error code "+exitVal);
+		//System.out.println("Exited with error code "+exitVal);
 		myReturn+='\n';
 		myReturn+="Exited with error code "+exitVal;
+		System.out.println(myReturn);
 		return myReturn;
 	}
 }

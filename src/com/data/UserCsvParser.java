@@ -41,6 +41,7 @@ public class UserCsvParser
 			HashMap paramMap=new HashMap();
 			paramMap.put("fname", entries[1]);
 			paramMap.put("lname", entries[0]);
+			paramMap.put("mname", "");
 			paramMap.put("email", entries[2]);
 			paramMap.put("password", myRandom.nextInt(10000000));
 			paramMap.put("salt", UUID.randomUUID());

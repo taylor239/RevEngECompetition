@@ -46,7 +46,8 @@
         </td>
     </tr>
 	<tr>
-    	<td width="25%">
+    	<td width="20%">
+        <!--
         <table class="inner_content_table">
         <tr>
         <td>
@@ -72,8 +73,9 @@
         </td>
         </tr>
         </table>
+        -->
         </td>
-        <td width="50%">
+        <td width="60%">
         <table class="inner_content_table">
         <tr>
         <td>
@@ -102,7 +104,8 @@
         </tr>
         </table>
         </td>
-        <td width="25%">
+        <td width="20%">
+        <!--
         <table class="inner_content_table">
         <tr>
         <td>
@@ -146,6 +149,12 @@
         	<div align="center">Hi there, <%=displayName %>! Your last visit was <%
 				java.util.Date logonDate=(java.util.Date)myUser.getAttribute("previousVisit");
 				out.print(dateFormat.format(logonDate));
+				%>.  Your role is <%
+				out.print(myUser.getAttribute("role") + ".");
+				if(myUser.getAttribute("role").equals("student"))
+				{
+					out.print("  Your administrator is " + myUser.getAttribute("administrator"));
+				}
 				%>.<br />Not you?<br /></div>
             <%@include file="./WEB-INF/includes/logoutWindow.jsp" %>
             </td>
@@ -161,6 +170,7 @@
         </td>
         </tr>
         </table>
+        -->
         </td>
     </tr>
 </table>

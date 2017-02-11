@@ -51,7 +51,7 @@ public class ChallengeObfuscatedFileServer extends HttpServlet {
         DBObj descriptor = (DBObj)myChallenges.get(0);
         byte[] output=(byte[])descriptor.getAttribute("obfuscatedFile");
         
-		response.setHeader("Content-Disposition", "attachment;filename="+(String)request.getParameter("challengeName"));
+		response.setHeader("Content-Disposition", "attachment;filename="+(String)request.getParameter("challengeName").replaceAll("\\s+",""));
 		//response.getWriter().append("Served at: ").append(request.getContextPath());
 		ServletOutputStream out=response.getOutputStream();
 		out.write(output);
