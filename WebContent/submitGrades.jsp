@@ -11,42 +11,6 @@
 <body>
 <%@include file="./WEB-INF/includes/mainPane.jsp" %>
 <table id="inner_content">
-	<tr>
-    	<td colspan="3" class="no_bottom_padding">
-    	<div align="center">
-    	<table id="page_title_table_row">
-    	<tr>
-    	<td>
-        <div align="center" id="inner_content_title">
-        <%
-        
-        if(verbose)
-        {
-        	System.out.println("Got to hasUser conditional");
-        }
-		if(!hasUser)
-		{
-		%>
-        Welcome to the Tigress Challenge Engine
-        <%
-		}
-		else
-		{
-		%>
-        Welcome back, <% out.print(displayName); %>!
-        <%
-		}
-		%>
-        </div>
-        <div align="center" id="inner_content_slogan">
-        Obfuscation Made Easy
-        </div>
-        </td>
-        </tr>
-        </table>
-        </div>
-        </td>
-    </tr>
     
 	<tr>
     	<td width="25%">

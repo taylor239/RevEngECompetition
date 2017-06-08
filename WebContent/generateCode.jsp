@@ -301,10 +301,10 @@
         myChallenges.add(myChallengesFull.get(0));
         myConnector.challengeParticipantCodeWritten((String)((DBObj)myChallenges.get(0)).getAttribute("challenge_name"), (String)((DBObj)myChallenges.get(0)).getAttribute("email"), firstFileData, finalFileData);
         
-        String forwardURL = "viewChallenge.jsp?challengeName="+((DBObj)myChallenges.get(0)).getAttribute("challenge_name");
+        //String forwardURL = "viewChallenge.jsp?challengeName="+((DBObj)myChallenges.get(0)).getAttribute("challenge_name");
         
         %>
-        <meta http-equiv="refresh" content="0; url=<%=forwardURL %>" />
+        <meta http-equiv="refresh" content="0; url=myChallenges.jsp" />
         <%
         }
         %>

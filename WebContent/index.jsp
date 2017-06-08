@@ -26,7 +26,7 @@
 		if(!hasUser)
 		{
 		%>
-        Welcome to the Tigress Challenge Engine
+        Welcome to RevEngE, the Reverse Engineering Engine
         <%
 		}
 		else
@@ -90,10 +90,9 @@
         <table class="news_item_table">
         <tr>
         <td>
-        <p>This is the Tigress training and testing engine.  The web application here allows instructors to provide obfuscation challenges to trainees.  It does this by using the Tigress obfuscation program (see left); instructors store Tigress arguments to generate obfuscated code as "challenges."  After linking those challenges to trainees' accounts, the trainees may download the obfuscated code, deobfuscate it, and submit it for grading.</p><br />
-        <p>Tigress offers several standard, typical argument sets which make it easy for those unfamiliar with Tigress to generate challenges.  This web application also hosts a virtual machine with several reversing tools preinstalled in order to facilitate trainees' progress.</p><br />
-        <p>Currently, Tigress requires students to manually download obfuscated code directly from this web application.  Eventually, the application will automatically provision the code to virtual machines for trainees to download.  Additionally, those virtual machines will have various data collecting tools to determine maximally effective strategies for reversing and training.  Finally, grading must all be done manually at this time, but future work includes automated grading integration.</p><br />
-        <p>To use this web application, log in on the right and use the top and left manu bars to navigate.</p>
+        <p>This is RevEngE the Tigress Reverse Engineering Engine.  The web application here allows instructors to provide obfuscation challenges to trainees.  It does this by using the Tigress obfuscation program (see left); instructors store Tigress arguments to generate obfuscated code as "challenges."  Instructors then assign these challenges to students in the form of "assignments".  Students then generate and download obfuscated code and upload solutions which deobfuscate or "crack" the code.</p><br />
+        <p>Tigress offers several standard, typical argument sets which make it easy for those unfamiliar with Tigress to generate challenges.  This web application also hosts a virtual machine image with several reversing tools preinstalled in order to facilitate trainees' progress.  The "Tutorials" section instructs students how to use the installed tools.</p><br />
+        <p>Please see the "Information" pages for <a href="studentInfo.jsp">students</a> and <a href="instructorInfo.jsp">instructors</a> in order to learn how to use this site.</p>
         </td>
         </tr>
         </table>

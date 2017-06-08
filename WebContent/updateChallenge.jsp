@@ -21,6 +21,7 @@
         <%
         String refreshChallenge = "";
         String refreshChallengeName = "";
+        boolean isNew = true;
         if(verbose)
         {
         	System.out.println("Got to hasUser conditional");
@@ -61,6 +62,7 @@
     	</tr>
     	<form action="updateChallenge.jsp">
         <%
+        
         ArrayList myChallengesFull = new ArrayList();
         ArrayList challengeAssignment = new ArrayList();
         ArrayList alreadyAssignedList = new ArrayList();
@@ -73,6 +75,9 @@
         }
         else
         {
+        	String newType = "assignment";
+        	newType = (String)request.getParameter("new_type");
+        	
         	String prevChallenge = null;
         	prevChallenge = (String)request.getParameter("prev_challenge_name");
         	
@@ -93,6 +98,7 @@
         	boolean success = false;
         	if(prevChallenge != null)
         	{
+        		isNew = false;
         		success = myConnector.updateChallenge(prevChallenge, challengeName, openTime, endTime, description);
         		if(success)
         		{
@@ -110,34 +116,52 @@
         	}
         	else
         	{
-        		success = myConnector.createChallenge(challengeName, openTime, endTime, description, (String)myUser.getAttribute("email"));
-        		if(!success)
-            	{
-            		refreshChallenge = "Failed to create challenge.";
-            	}
-        		else
+        		if(newType.equals("assignment"))
         		{
-        			refreshChallenge = "Created " + refreshChallenge + ".";
+	        		success = myConnector.createChallenge(challengeName, openTime, endTime, description, (String)myUser.getAttribute("email"), newType);
+	        		if(!success)
+	            	{
+	            		refreshChallenge = "Failed to create challenge.";
+	            	}
+	        		else
+	        		{
+	        			refreshChallenge = "Created " + refreshChallenge + ".";
+	        		}
+        		}
+        		else if(newType.equals("challenge"))
+        		{
+        			success = myConnector.createChallengeDefault(challengeName, description, (String)myUser.getAttribute("email"));
+        			if(!success)
+                	{
+                		refreshChallenge = "Failed to create challenge.";
+                	}
+            		else
+            		{
+            			refreshChallenge = "Created " + refreshChallenge + ".";
+            		}
         		}
         	}
         	
-        	
-        	for(int x=0; success && x<=numCommands; x++)
+        	//if(newType.equals("assignment"))
         	{
-        		String commandOrder = (String)request.getParameter("command_order_" + x);
-        		String commandName = (String)request.getParameter("commandName_" + x);
-        		String command = (String)request.getParameter("command_" + x);
-        		if(command == null)
-        		{
-        			command = "";
-        		}
-        		myConnector.addCommand(commandOrder, commandName, command, challengeName);
+	        	for(int x=0; success && x<=numCommands; x++)
+	        	{
+	        		String commandOrder = (String)request.getParameter("command_order_" + x);
+	        		String commandName = (String)request.getParameter("commandName_" + x);
+	        		String command = (String)request.getParameter("command_" + x);
+	        		System.out.println("Got command: " + commandOrder + ":" + commandName);
+	        		if(command == null)
+	        		{
+	        			command = "";
+	        		}
+	        		myConnector.addCommand(commandOrder, commandName, command, challengeName);
+	        	}
+	        	
+	        	
+		        myChallengesFull = myConnector.getChallenge(challengeName, (String)myUser.getAttribute("email"));
+		        challengeAssignment = myConnector.getChallengeAssignment((String)myUser.getAttribute("email"), challengeName);
+		        allStudents = myConnector.getAdminStudents((String)myUser.getAttribute("email"));
         	}
-        	
-        	
-	        myChallengesFull = myConnector.getChallenge(challengeName, (String)myUser.getAttribute("email"));
-	        challengeAssignment = myConnector.getChallengeAssignment((String)myUser.getAttribute("email"), challengeName);
-	        allStudents = myConnector.getAdminStudents((String)myUser.getAttribute("email"));
 	        
 	        HashMap fastLookupMap = new HashMap();
 	        for(int x=0; success && x<challengeAssignment.size(); x++)
@@ -412,7 +436,20 @@
         </td>
     </tr>
 </table>
+<%
+if(isNew)
+{
+%>
+<meta http-equiv="refresh" content="0; url=index.jsp?alert_message=<%=refreshChallenge %>" />
+<%
+}
+else
+{
+%>
 <meta http-equiv="refresh" content="0; url=manageChallenge.jsp?challengeName=<%=refreshChallengeName %>&alert_message=<%=refreshChallenge %>" />
+<%
+}
+%>
 <%@include file="./WEB-INF/includes/footer.jsp" %>
 </body>
 

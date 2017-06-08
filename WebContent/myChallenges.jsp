@@ -49,7 +49,7 @@
     </tr>
     -->
 	<tr>
-    	<td width="10%">
+    	<td width="20%">
     	<!--
         <table class="inner_content_table">
         <tr>
@@ -93,7 +93,7 @@
         </table>
         </td>
         -->
-        <td width="80%">
+        <td width="60%">
         <table class="inner_content_table">
         <!--
         <tr>
@@ -142,7 +142,7 @@
         <table class="news_table" width="100%">
         <tr class="title_general">
         <td colspan="3" align="center">
-        Challenges
+        Assignments
         </td>
     	</tr>
         <tr colspan="3" width="100%:">
@@ -166,14 +166,14 @@
         ArrayList keys = ((DBObj)myChallenges.get(0)).getAttributeNames();
         ConcurrentHashMap translationMap = new ConcurrentHashMap();
         translationMap.put("admin_email", "Instructor");
-        translationMap.put("challenge_name", "Challenge");
+        translationMap.put("challenge_name", "Assignment");
         translationMap.put("open_time", "Open");
         translationMap.put("end_time", "Close");
         translationMap.put("grade", "Grade");
         for(int x=0; x<keys.size(); x++)
         {
         	String tmp=(String)keys.get(x);
-        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile"))
+        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || tmp.equals("grade") || tmp.equals("admin_email"))
         	{
         		keys.remove(x);
         		x--;
@@ -184,7 +184,7 @@
         for(int x=0; x<keys.size(); x++)
         {
         %>
-        <td width="<% out.print(100/(double)keys.size()); %>%">
+        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
         <div align="center">
         <b>
         <%
@@ -203,18 +203,35 @@
         <%
         }
         %>
+        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+        <b>Code</b>
+        </td>
+        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+        <b>Write-Up</b>
+        </td>
+        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+        <b>Answer</b>
+        </td>
+        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+        <b>Submit</b>
+        </td>
         </tr>
         <%
         for(int x=0; x<myChallenges.size(); x++)
         {
+        	if(!((DBObj)myChallenges.get(x)).getAttribute("type").equals("assignment"))
+        	{
+        		continue;
+        	}
         %>
+        <form id="uploadForm_<%=x %>" action="ChallengeDeobfuscatedSubmissionServlet" method="post" enctype="multipart/form-data"></form>
         <tr>
 	        <%
 	        for(int y=0; y<keys.size(); y++)
 	        {
 	        %>
-	        <td width="<% out.print(100/(double)keys.size()); %>%">
-	        <div align="center">
+	        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+	        <div align="left">
 	        <%
 	        	if(keys.get(y).equals("open_time") || keys.get(y).equals("end_time"))
 	        	{
@@ -224,7 +241,18 @@
 	        	else if(keys.get(y).equals("challenge_name"))
 	        	{
 	        		%>
-	        		<a href="viewChallenge.jsp?challengeName=<%= ((DBObj)myChallenges.get(x)).getAttribute(keys.get(y)) %>">
+	        		<!-- <a href="viewChallenge.jsp?challengeName=<%= ((DBObj)myChallenges.get(x)).getAttribute(keys.get(y)) %>">-->
+	        		<script>
+	        		<%
+	        		String lastSubmission = "";
+	        		if(((DBObj)myChallenges.get(x)).getAttribute("submissionTime")!=null)
+	        		{
+	        			lastSubmission = "You submitted last on: " + ((DBObj)myChallenges.get(x)).getAttribute("submissionTime");
+	        		}
+	        		%>
+	        		var message_<%=x %> = '<table width="100%"><tr width="100%"><td width="100%" style="vertical-align:bottom;">Assignment Instructions:</td></tr><tr><td style=\"vertical-align:top;\"><table style=\"width:100%;\"><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\"><%=((DBObj)myChallenges.get(x)).getAttribute("description") %></td></tr><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\"><%=lastSubmission %></td></tr></table></td></tr></table>';
+	        		</script>
+	        		<a onclick="showMessageBox(message_<%=x %>)">
 	        		<%
 	        		out.print(((DBObj)myChallenges.get(x)).getAttribute(keys.get(y)));
 	        		%>
@@ -241,6 +269,36 @@
 	        <%
 	        }
 	        %>
+	        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+	        <%
+	        if((Integer)((DBObj)myChallenges.get(x)).getAttribute("code_generated") == 0)
+	        {
+	        %>
+	        <a href="generateCode.jsp?challengeName=<%= ((DBObj)myChallenges.get(x)).getAttribute("challenge_name") %>">
+	        Generate
+	        </a>
+	        <%
+	        }
+	        else
+	        {
+	        %>
+	        <a href="ChallengeObfuscatedFileServer?challengeName=<%= ((DBObj)myChallenges.get(0)).getAttribute("challenge_name") %>">
+	        Download
+	        </a>
+	        <%
+	        }
+	        %>
+	        </td>
+	        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+	        <input style="width:100% !important;" form="uploadForm_<%=x %>" type="file" name="writeFile" size="50" />
+	        </td>
+	        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+	        <input style="width:100% !important;" form="uploadForm_<%=x %>" type="file" name="codeFile" size="50" />
+	        </td>
+	        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+	        <input form="uploadForm_<%=x %>" type="hidden" name="challengeName" value="<%= ((DBObj)myChallenges.get(0)).getAttribute("challenge_name") %>" />
+            <input form="uploadForm_<%=x %>" type="submit" value="Submit" />
+	        </td>
         </tr>
         <%
         }
@@ -255,7 +313,7 @@
             ArrayList keys = ((DBObj)myChallenges.get(0)).getAttributeNames();
             ConcurrentHashMap translationMap = new ConcurrentHashMap();
             translationMap.put("admin_email", "Instructor");
-            translationMap.put("challenge_name", "Challenge");
+            translationMap.put("challenge_name", "Assignments");
             translationMap.put("open_time", "Open");
             translationMap.put("end_time", "Close");
             translationMap.put("grade", "Grade");
@@ -311,7 +369,7 @@
     	        {
     	        %>
     	        <td width="<% out.print(100/(double)keys.size()); %>%">
-    	        <div align="center">
+    	        <div align="left">
     	        <%
     	        	if(keys.get(y).equals("open_time") || keys.get(y).equals("end_time"))
     	        	{
@@ -359,7 +417,7 @@
         </tr>
         </table>
         </td>
-        <td width="10%">
+        <td width="20%">
         <!--
         <table class="inner_content_table">
         <tr>

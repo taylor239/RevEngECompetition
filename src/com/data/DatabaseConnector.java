@@ -38,6 +38,7 @@ public class DatabaseConnector
 {
 	//private String userName, password, address;
 	//private String baseAddr="localhost";
+	String theName = "tigress_challenge";
 	/**
 	 * This is the driver to be used.  It is default a mySql driver, but can be set later.
 	 */
@@ -213,7 +214,9 @@ public class DatabaseConnector
 		getConnection();
 		try
 		{
-			PreparedStatement myStmt=connection.prepareStatement("SELECT `COLUMN_NAME` FROM `INFORMATION_SCHEMA`.`COLUMNS` WHERE  `TABLE_SCHEMA` = '"+databaseName+"' AND  `TABLE_NAME` =  ?");
+			System.out.println(theName);
+			System.out.println(table);
+			PreparedStatement myStmt=connection.prepareStatement("SELECT `COLUMN_NAME` FROM `INFORMATION_SCHEMA`.`COLUMNS` WHERE  `TABLE_SCHEMA` = '"+theName+"' AND  `TABLE_NAME` =  ?");
 			myStmt.setString(1, table);
 			ResultSet myResults=myStmt.executeQuery();
 			disconnect();
@@ -492,6 +495,97 @@ public class DatabaseConnector
 	/**
 	 * 
 	 * @param username
+	 * @return
+	 */
+	public synchronized ArrayList getAdminStudents(String username, String ordering, boolean asc)
+	{
+		ArrayList userColumns = getColumnNames("user");
+		ArrayList roleColumns = getColumnNames("role");
+		
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			String suffix = " ASC";
+			if(!asc)
+			{
+				suffix=" DESC";
+			}
+			
+			System.out.println(userColumns);
+			
+			if(userColumns.contains(ordering))
+			{
+				suffix = "ORDER BY user." + ordering + suffix;
+			}
+			else if(roleColumns.contains(ordering))
+			{
+				suffix = "ORDER BY role." + ordering + suffix;
+			}
+			
+			if(verbose)
+			{
+				System.out.println(ordering);
+				System.out.println(asc);
+				System.out.println("SELECT * FROM user INNER JOIN role ON user.email = role.email WHERE role.administrator = ? " + suffix);
+			}
+			
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM user INNER JOIN role ON user.email = role.email WHERE role.administrator = ? " + suffix);
+			myStmt.setString(1, username);
+			//myStmt.setString(2, ordering);
+			ResultSet myResults=myStmt.executeQuery();
+			disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			return null;
+		}
+		disconnect();
+		return myReturn;
+	}
+	
+	
+	/**
+	 * 
+	 * @param username
 	 * @param password
 	 * @return
 	 */
@@ -674,6 +768,65 @@ public class DatabaseConnector
 		return myReturn;
 	}
 	
+	public synchronized ArrayList getChallengeDefault(String challengeName, String email)
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge_default INNER JOIN challenge_command_default ON challenge_default.challenge_name = challenge_command_default.challenge_name WHERE challenge_default.challenge_name = ? AND challenge_default.administrator = ? ORDER BY challenge_command_default.command_order ASC");
+			myStmt.setString(1, challengeName);
+			myStmt.setString(2, email);
+			ResultSet myResults=myStmt.executeQuery();
+			disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return null;
+		}
+		disconnect();
+		return myReturn;
+	}
+	
 	public synchronized ArrayList getChallengeSubmission(String challengeName, String email)
 	{
 		if(verbose)
@@ -791,7 +944,7 @@ public class DatabaseConnector
 		return myReturn;
 	}
 	
-	public synchronized ArrayList getChallengeDefaults()
+	public synchronized ArrayList getChallengeDefaults(String username)
 	{
 		if(verbose)
 		{
@@ -808,8 +961,8 @@ public class DatabaseConnector
 		ArrayList myReturn = new ArrayList();
 		try
 		{
-			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge_default INNER JOIN challenge_command_default ON challenge_default.challenge_name = challenge_command_default.challenge_name ORDER BY challenge_command_default.command_order ASC");
-			//myStmt.setString(1, username);
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge_default INNER JOIN challenge_command_default ON challenge_default.challenge_name = challenge_command_default.challenge_name AND challenge_default.administrator = challenge_command_default.administrator WHERE challenge_default.administrator = '' OR challenge_default.administrator = ? ORDER BY challenge_default.administrator, challenge_command_default.command_order ASC");
+			myStmt.setString(1, username);
 			ResultSet myResults=myStmt.executeQuery();
 			disconnect();
 			ResultSetMetaData meta=myResults.getMetaData();
@@ -1030,6 +1183,27 @@ public class DatabaseConnector
 		return true;
 	}
 	
+	public boolean updateChallengeDefault(String prevName, String newName, String description)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("UPDATE `challenge_default` SET `challenge_name`=?,`description`=? WHERE `challenge_name`=?");
+			myStmt.setString(1, newName);
+			myStmt.setString(2, description);
+			myStmt.setString(3, prevName);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return false;
+		}
+		disconnect();
+		return true;
+	}
+	
 	public boolean setGrade(String challenge, String email, String grade)
 	{
 		getConnection();
@@ -1051,17 +1225,18 @@ public class DatabaseConnector
 		return true;
 	}
 	
-	public boolean createChallenge(String newName, String openTime, String endTime, String description, String email)
+	public boolean createChallenge(String newName, String openTime, String endTime, String description, String email, String type)
 	{
 		getConnection();
 		try
 		{
-			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge`(`challenge_name`, `open_time`, `end_time`, `description`, `admin_email`) VALUES (?,?,?,?,?)");
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge`(`challenge_name`, `open_time`, `end_time`, `description`, `admin_email`, `type`) VALUES (?,?,?,?,?,?)");
 			myStmt.setString(1, newName);
 			myStmt.setString(2, openTime);
 			myStmt.setString(3, endTime);
 			myStmt.setString(4, description);
 			myStmt.setString(5, email);
+			myStmt.setString(6, type);
 			
 			myStmt.execute();
 		}
@@ -1076,6 +1251,32 @@ public class DatabaseConnector
 		return true;
 	}
 	
+	public boolean createChallengeDefault(String newName, String description, String email)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge_default`(`challenge_name`, `description`, `administrator`) VALUES (?,?,?)");
+			myStmt.setString(1, newName);
+			//myStmt.setString(2, openTime);
+			//myStmt.setString(3, endTime);
+			myStmt.setString(2, description);
+			myStmt.setString(3, email);
+			//myStmt.setString(6, type);
+			
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return false;
+		}
+		disconnect();
+		//assignChallenge(newName, email);
+		return true;
+	}
+	
 	public void deleteCommands(String prevChallengeName)
 	{
 		getConnection();
@@ -1083,6 +1284,24 @@ public class DatabaseConnector
 		{
 			PreparedStatement myStmt = connection.prepareStatement("DELETE FROM `challenge_command` WHERE `challenge_name` = ?");
 			myStmt.setString(1, prevChallengeName);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public void deleteCommandsDefault(String prevChallengeName, String administrator)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("DELETE FROM `challenge_command_default` WHERE `challenge_name` = ? AND `administrator` = ?");
+			myStmt.setString(1, prevChallengeName);
+			myStmt.setString(2, administrator);
 			myStmt.execute();
 		}
 		catch(Exception e)
@@ -1122,6 +1341,27 @@ public class DatabaseConnector
 			myStmt.setString(2, commandName);
 			myStmt.setString(3, command);
 			myStmt.setString(4, challengeName);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public void addCommandDefault(String commandOrder, String commandName, String command, String challengeName, String email)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge_command_default`(`command_order`, `commandName`, `command`, `challenge_name`, `administrator`) VALUES (?, ?, ?, ?, ?)");
+			myStmt.setString(1, commandOrder);
+			myStmt.setString(2, commandName);
+			myStmt.setString(3, command);
+			myStmt.setString(4, challengeName);
+			myStmt.setString(5, email);
 			myStmt.execute();
 		}
 		catch(Exception e)

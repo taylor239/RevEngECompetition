@@ -12,29 +12,26 @@
 <%@include file="./WEB-INF/includes/mainPane.jsp" %>
 <table id="inner_content">
 	<tr>
-    	<td width="10%">
-        <table class="inner_content_table">
-        <tr>
-        <td>
-        
-        </td>
-        </tr>
-        </table>
-        </td>
-        <td width="80%">
+    	<td width="20%">
         <table class="inner_content_table">
         <tr>
         <td>
         <table class="news_table" width="100%">
         <tr class="title_general">
         <td colspan="3" align="center">
-        Students
+        Filter
         </td>
     	</tr>
         <tr colspan="3" width="100%:">
         <td>
         <table class="news_item_table" width="100%">
         <tr>
+        <td colspan="2">
+        <div align="center">
+        <b>Course</b>
+        </div>
+        </td>
+        </tr>
         <%
         if(!hasUser)
         {
@@ -44,11 +41,40 @@
         }
         else if(myUser.getAttribute("role").equals("admin"))
         {
-        	ArrayList myChallenges = myConnector.getAdminStudents((String)myUser.getAttribute("email"));
+        	String ordering = request.getParameter("orderBy");
+        	String direction = request.getParameter("direction");
+        	boolean asc = true;
+        	if(direction != null && direction.equals("dsc"))
+        	{
+        		asc = false;
+        	}
+        	
+        	ArrayList myChallenges = new ArrayList();
+        	if(ordering != null && !ordering.isEmpty())
+        	{
+        		myChallenges = myConnector.getAdminStudents((String)myUser.getAttribute("email"), ordering, asc);
+        	}
+        	else
+        	{
+        		myChallenges = myConnector.getAdminStudents((String)myUser.getAttribute("email"));
+        	}
+        	
         	if(verbose)
             {
             	System.out.println(myChallenges);
             }
+        	
+        	
+        	ArrayList courses = new ArrayList();
+        	for(int x=0; x<myChallenges.size(); x++)
+        	{
+        		DBObj tmpObj = (DBObj)myChallenges.get(x);
+        		if(!courses.contains(tmpObj.getAttribute("course")))
+        		{
+        			courses.add(tmpObj.getAttribute("course"));
+        		}
+        	}
+        	
             ArrayList keys = ((DBObj)myChallenges.get(0)).getAttributeNames();
             ConcurrentHashMap translationMap = new ConcurrentHashMap();
             translationMap.put("admin_email", "Instructor");
@@ -84,13 +110,88 @@
             		x--;
             	}
             }
+            
+            for(int x=0; x<courses.size(); x++)
+            {
+            	%>
+            <script>
+            
+            function hideCourse<%=courses.get(x) %>(checkbox)
+            {
+            	var courseEles = document.getElementsByClassName("<%=courses.get(x) %>");
+        		for(var x=0; x<courseEles.length; x++)
+    			{
+    				courseEles[x].style.display="none";
+    			}
+        		checkbox.checked=false;
+        		
+        		checkbox.setAttribute("onclick", "showCourse<%=courses.get(x) %>(this)");
+            }
+            
+            function showCourse<%=courses.get(x) %>(checkbox)
+            {
+            	var courseEles = document.getElementsByClassName("<%=courses.get(x) %>");
+        		for(var x=0; x<courseEles.length; x++)
+    			{
+    				courseEles[x].style.display="table-row";
+    			}
+        		checkbox.checked=true;
+        		
+        		checkbox.setAttribute("onclick", "hideCourse<%=courses.get(x) %>(this)");
+            }
+            
+            </script>
+            <tr>
+            <td width="50%">
+            <%=courses.get(x) %>
+            </td>
+            <td width="50%">
+            <div align="right">
+            <input type="checkbox" checked="checked" onclick="hideCourse<%=courses.get(x) %>(this)"></input>
+            </div>
+            </td>
+            </tr>
+            	<%
+            }
+            %>
+        </table>
+        </td>
+        </tr>
+        </table>
+        </td>
+        </tr>
+        </table>
+        </td>
+        <td width="60%">
+        <table class="inner_content_table">
+        <tr>
+        <td>
+        <table class="news_table" width="100%">
+        <tr class="title_general">
+        <td colspan="3" align="center">
+        Students
+        </td>
+    	</tr>
+        <tr colspan="3" width="100%:">
+        <td>
+        <table class="news_item_table" width="100%">
+        <tr>
+        	<%
             //keys.add("open_time");
             //keys.add("end_time");
             for(int x=0; x<keys.size(); x++)
             {
             %>
             <td width="<% out.print(100/(double)(keys.size() + 1)); %>%">
-            <div align="center">
+            <div align="left">
+            <%
+            	String direct = "asc";
+            	if(asc && ordering != null && ordering.equals(keys.get(x)))
+            	{
+            		direct = "dsc";
+            	}
+            %>
+            <a href="manageStudents.jsp?orderBy=<%=keys.get(x) %>&direction=<%=direct %>">
             <b>
             <%
             	if(translationMap.containsKey(keys.get(x)))
@@ -101,15 +202,27 @@
             	{
             		out.print(keys.get(x));
             	}
+            	if(ordering != null && ordering.equals(keys.get(x)))
+            	{
+	            	if(direct.equals("asc"))
+	            	{
+	            		out.print("&#8681;");
+	            	}
+	            	else
+	            	{
+	            		out.print("&#8679;");
+	            	}
+            	}
             %>
             </b>
+            </a>
             </div>
             </td>
             <%
             }
             %>
             <td width="<% out.print(100/(double)(keys.size() + 1)); %>%">
-            <div align="center">
+            <div align="left">
             <b>
             Remove
             </b>
@@ -121,13 +234,13 @@
             for(int x=0; x<myChallenges.size(); x++)
             {
             %>
-            <tr>
+            <tr class="<%=((DBObj)myChallenges.get(x)).getAttribute("course") %>">
     	        <%
     	        for(int y=0; y<keys.size(); y++)
     	        {
     	        %>
     	        <td width="<% out.print(100/(double)keys.size()); %>%">
-    	        <div align="center">
+    	        <div align="left">
     	        <%
     	        	if((((DBObj)myChallenges.get(x)).getAttribute(keys.get(y)) != null) && (keys.get(y).equals("open_time") || keys.get(y).equals("end_time")))
     	        	{
@@ -160,7 +273,7 @@
     	        }
     	        %>
     	        <td width="<% out.print(100/(double)keys.size()); %>%">
-    	        <div align="center">
+    	        <div align="left">
     	        <a href="deleteUser.jsp?userName=<%= lastName %>">
     	        Remove
     	        </a>
@@ -179,7 +292,7 @@
         </tr>
         </table>
         </td>
-        <td width="10%">
+        <td width="20%">
         
         </td>
     </tr>

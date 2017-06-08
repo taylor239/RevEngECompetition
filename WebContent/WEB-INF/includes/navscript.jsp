@@ -221,7 +221,7 @@ function highlight(item)
 {
 	//item.style.background="linear-gradient(#6F6FEA, #757575)";
 	//item.style.background="linear-gradient(#292929, #5261C7)";
-	item.style.background="#111184";
+	item.style.background="#002a3f";
 	item.style.cursor="pointer";
 }
 

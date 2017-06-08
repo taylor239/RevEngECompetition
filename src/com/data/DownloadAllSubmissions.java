@@ -18,7 +18,8 @@ import javax.servlet.http.HttpSession;
  * Servlet implementation class DownloadAllSubmissions
  */
 @WebServlet({ "/DownloadAllSubmissions", "/downloadAll" })
-public class DownloadAllSubmissions extends HttpServlet {
+public class DownloadAllSubmissions extends HttpServlet
+{
 	private static final long serialVersionUID = 1L;
        
     /**

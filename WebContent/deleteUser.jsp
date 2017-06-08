@@ -322,6 +322,7 @@
         </td>
     </tr>
 </table>
+<meta http-equiv="refresh" content="0; url=manageStudents.jsp" />
 <%@include file="./WEB-INF/includes/footer.jsp" %>
 </body>
 

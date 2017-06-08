@@ -32,7 +32,7 @@
 	width: 50%;
 	height: 75%;
 	padding: 2px;
-	border: 4px solid #ECB3B3;
+	border: 4px solid #006699;
 	background-color: white;
 	z-index:1002;
 	overflow: auto;

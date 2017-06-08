@@ -14,21 +14,16 @@
     
 	<tr>
     	<td width="25%">
-        <table class="inner_content_table">
-        <tr>
-        <td>
-        <form id="updateForm" action="updateChallenge.jsp">
-        <table class="news_table" width="100%">
-        <tr class="title_general">
-        <td colspan="3" align="center">
-        Assign To
-        </td>
-    	</tr>
+        
         <%
         ArrayList myChallengesFull = new ArrayList();
         ArrayList challengeAssignment = new ArrayList();
         ArrayList alreadyAssignedList = new ArrayList();
         ArrayList allStudents = new ArrayList();
+        
+        boolean detailed = true;
+        String nonDetailedAppend = "style=\"display:none;\"";
+        String detailedAppend = "";
         
         if(!hasUser || !(myUser.getAttribute("role").equals("admin")))
         {
@@ -51,6 +46,19 @@
 	        if(verbose)
 	        {
 	        	System.out.println(myChallengesFull);
+	        }
+	        
+	        DBObj challengeHead = (DBObj)myChallengesFull.get(0);
+	        //boolean detailed = true;
+	        if((((DBObj)myChallengesFull.get(0)).getAttribute("type")).equals("assignment"))
+	        {
+	        	detailed = false;
+	        }
+	        //String nonDetailedAppend = "style=\"display:none;\"";
+	        if(detailed)
+	        {
+	        	nonDetailedAppend = "";
+	        	detailedAppend = "style=\"display:none;\"";
 	        }
 	        
 	        ArrayList courseNames = new ArrayList();
@@ -106,6 +114,273 @@
 	        int count = 0;
 	        
 	        %>
+	    <table class="inner_content_table"<%=" " + detailedAppend %>>
+        <tr<%=" " + detailedAppend %>>
+        <td>
+        </td>
+        </tr>
+        </table>
+        </td>
+        <td width="50%">
+        <table class="inner_content_table" width="100%">
+        <tr>
+        <td>
+        <table class="news_table" width="100%">
+        <tr class="title_general">
+        <td align="center">
+        Assignment: <%=(String)request.getParameter("challengeName") %>
+        </td>
+        </tr>
+        <tr width="100%:">
+        <td>
+        <table class="news_item_table" width="100%">
+        <tr>
+        <td width="50%">
+        <div align="center">
+        <a href="viewGrades.jsp?challengeName=<%=(String)request.getParameter("challengeName") %>">
+        View Submission Details
+        </a>
+        </div>
+        </td>
+        
+        <td width="50%">
+        <div align="center">
+        <a href="deleteChallenge.jsp?challengeName=<%=(String)request.getParameter("challengeName") %>">
+        Delete Assignment
+        </a>
+        </div>
+        </td>
+    	</tr>
+    	</table>
+    	</td>
+    	</tr>
+    	</table>
+    	</td>
+    	</tr>
+        </table>
+        <table class="inner_content_table">
+        <tr>
+        <td>
+        <table class="news_table" width="100%">
+        <tr class="title_general">
+        <td colspan="3" align="center">
+        Edit Assignment
+        </td>
+    	</tr>
+        <tr colspan="2" width="100%">
+        <td>
+        <table class="news_item_table" width="100%" id="challengeTable">
+        <tr>
+        <td width="10%" style="vertical-align:middle;">
+        Name:
+        </td>
+        <td width="90%">
+        <input form="updateForm" type="hidden" name="prev_challenge_name" value="<%=challengeHead.getAttribute("challenge_name") %>"></input>
+        <input form="updateForm" style="width:90%" type="text" name="challenge_name" value="<%=challengeHead.getAttribute("challenge_name") %>"></input>
+        </td>
+        </tr>
+        <tr>
+        <td width="10%" style="vertical-align:middle;">
+        Open:
+        </td>
+        <td width="90%">
+        <input form="updateForm" style="width:90%" type="datetime-local" name="open_time" value="<% out.print(challengeHead.getAttribute("open_time").toString().replaceAll(" ", "T")); %>"></input>
+        </td>
+        </tr>
+        <tr>
+        <td width="10%" style="vertical-align:middle;">
+        End:
+        </td>
+        <td width="90%">
+        <input form="updateForm" style="width:90%" type="datetime-local" name="end_time" value="<% out.print(challengeHead.getAttribute("end_time").toString().replaceAll(" ", "T")); %>"></input>
+        </td>
+        </tr>
+        <tr>
+        <td width="10%" style="vertical-align:middle;">
+        Description:
+        </td>
+        <td width="90%">
+        <textarea rows="10" form="updateForm" style="width:90%" name="description"><%=challengeHead.getAttribute("description") %></textarea>
+        </td>
+        </tr>
+        <tr<%=" " + nonDetailedAppend %>>
+        <td colspan="2">
+        &nbsp;
+        </td>
+        </tr>
+        <tr class="title_general"<%=" " + nonDetailedAppend %>>
+        <td colspan="2" align="center">
+        Enter Obfuscation Instructions
+        </td>
+    	</tr>
+        <%
+        boolean didCompile = false;
+        for(int x=0; x<myChallengesFull.size() || x<3; x++)
+        {
+        	if(x >= myChallengesFull.size())
+        	{
+        		if(x >= 2)
+            	{
+            		//didCompile = true;
+            		//boolean isCompiled = challengeHead.getAttribute("commandName").equals("gcc");
+            		//String isCompiledString = "checked=\"checked\"";
+            		//if(!isCompiled)
+            		//{
+            		//	isCompiledString = "";
+            		//}
+            		%>
+            		<tr<%=" " + nonDetailedAppend %>>
+            		<td colspan="2">
+            		<table class="news_item_table" width="100%"<%=" " + nonDetailedAppend %>>
+            		<tr<%=" " + nonDetailedAppend %>>
+    	        	<td colspan="2">
+    	        	<div align="center">
+    	        	<b>
+    	        	Compile for Binary Challenge
+    	        	</b>
+    	        	</div>
+    	        	</td>
+    	        	</tr>
+    	        	<tr<%=" " + nonDetailedAppend %>>
+    	        	<td width="33%">
+    		        Compile:
+    		        </td>
+    		        <td width="67%">
+    		        <input type="checkbox" form="updateForm"></input>
+    		        </td>
+    		        </tr>
+    		        </table>
+            		</td>
+            		</tr>
+            		<%
+            	}
+        	}
+        	else
+        	{
+        	challengeHead = (DBObj)myChallengesFull.get(x);
+        	if(x >= 2)
+        	{
+        		didCompile = true;
+        		boolean isCompiled = challengeHead.getAttribute("commandName").equals("gcc");
+        		String isCompiledString = "checked=\"checked\"";
+        		if(!isCompiled)
+        		{
+        			isCompiledString = "";
+        		}
+        		%>
+        		<tr<%=" " + nonDetailedAppend %>>
+        		<td colspan="2">
+        		<table class="news_item_table" width="100%"<%=" " + nonDetailedAppend %>>
+        		<tr<%=" " + nonDetailedAppend %>>
+	        	<td colspan="2">
+	        	<div align="center">
+	        	<b>
+	        	Compile for Binary Challenge
+	        	</b>
+	        	</div>
+	        	</td>
+	        	</tr>
+	        	<tr<%=" " + nonDetailedAppend %>>
+	        	<td width="33%">
+		        Compile:
+		        </td>
+		        <td width="67%">
+		        <input type="checkbox" form="updateForm" <%=isCompiledString %>></input>
+		        </td>
+		        </tr>
+		        </table>
+        		</td>
+        		</tr>
+        		<%
+        	}
+        	else
+        	{
+        		String step = "";
+        		if(x==0)
+        		{
+        			step = "Generate Code Step";
+        		}
+        		else
+        		{
+        			step = "Obfuscate Code Step";
+        		}
+        	%>
+        	<tr<%=" " + nonDetailedAppend %>>
+        	<td colspan="2">
+        	<div align="center">
+        	<b>
+        	<%=step %>
+        	</b>
+        	</div>
+        	</td>
+        	</tr>
+        	<tr<%=" " + nonDetailedAppend %>>
+        	<td colspan="2">
+        	<table class="news_item_table" width="100%"<%=" " + nonDetailedAppend %>>
+        	<tr<%=" " + nonDetailedAppend %>>
+        	<td width="33%">
+	        Command Number:
+	        </td>
+	        <td width="67%">
+	        <input form="updateForm" style="width:90%" type="text" name="command_order_<%=x %>" value="<%=challengeHead.getAttribute("command_order") %>"></input>
+	        </td>
+        	</tr>
+        	<tr<%=" " + nonDetailedAppend %>>
+        	<td width="33%">
+	        Command:
+	        </td>
+	        <td width="67%">
+	        <input form="updateForm" style="width:90%" type="text" name="commandName_<%=x %>" value="<%=challengeHead.getAttribute("commandName") %>"></input>
+	        </td>
+        	</tr>
+        	<tr<%=" " + nonDetailedAppend %>>
+        	<td width="33%">
+	        Arguments:
+	        </td>
+	        <td width="67%">
+	        <textarea form="updateForm" style="width:90%" name="command_<%=x %>"><%=challengeHead.getAttribute("command") %></textarea>
+	        </td>
+        	</tr>
+        	</table>
+        	</td>
+        	</tr>
+        	<%
+        	}
+        	}
+        }
+        %>
+        </table>
+        </td>
+        </tr>
+        <tr>
+        <td>
+        <table width="100%">
+        <tr>
+        <td width="50%">
+        <input form="updateForm" type="hidden" name="totalAdd" id="totalAdd" value="<%=myChallengesFull.size() - 1 %>"></input>
+        <input form="updateForm" type="hidden" value="Add Another Command" onclick="addAnotherCommand()"></input>
+        </td>
+        <td width="50%">
+        </td>
+        </tr>
+        </table>
+        </td>
+        </tr>
+        </table>
+        </td>
+        </tr>
+        </table>
+        <%
+        if(!detailed)
+        {
+        %>
+        <form id="updateForm" action="updateChallenge.jsp">
+        <table class="news_table" width="100%"<%=" " + detailedAppend %> style="display:none;">
+        <tr class="title_general"<%=" " + detailedAppend %>>
+        <td colspan="3" align="center">
+        Assign To
+        </td>
+    	</tr>
 	        
 	        <script>
 	        
@@ -130,7 +405,7 @@
 	    	<tr colspan="3">
 	    	<td width="100%">
 	    	<table class="news_item_table" width="100%">
-	    	<tr>
+	    	<tr style="display:none">
 	    	<td width="45%">
 	    	<input type="button" value="Select All" onclick="selectAllStudents()"></input>
 	    	</td>
@@ -264,7 +539,22 @@
 	    	</td>
 	    	<td width="25%">
 	    	<div align="right">
-	    	<input type="checkbox" onclick="selectCheck<%=courseName %>(this)"></input>
+	    	<%
+	    	String classChecked = "";
+	    	if(assignedMap.containsKey(courseName) && ((ArrayList) assignedMap.get(courseName)).size() == ((ArrayList) allStudentsMap.get(courseName)).size())
+	    	{
+	    		classChecked = "checked";
+	    	%>
+	    	<input type="checkbox" onclick="deselectCheck<%=courseName %>(this)" <%=classChecked %>></input>
+	    	<%
+	    	}
+	    	else
+	    	{
+	    	%>
+	    	<input type="checkbox" onclick="selectCheck<%=courseName %>(this)" <%=classChecked %>></input>
+	    	<%
+	    	}
+	    	%>
 	    	</div>
 	    	</td>
 	    	</tr>
@@ -325,7 +615,9 @@
 		        <%=curObj.getAttribute("email") %>
 		        </td>
 		        <td width="10%">
+		        <div align="right">
 		        <input type="checkbox" name="assign_<%=curObj.getAttribute("email") %>" id="studentCheck_<%=count++ %>" class="<%=curObj.getAttribute("course") %>"></input>
+		        </div>
 		        </td>
 		    	</tr>
 		    	</table>
@@ -334,188 +626,35 @@
 		        <%
 	        }
 	        }
-        }
         %>
         <script>
         totalCommands = <%=myChallengesFull.size() - 1 %>;
-        </script>
-        <tr>
-        <td colspan="3">
-        <div align="center">
-        <input form="updateForm" type="submit", value="Submit"></input>
-        </div>
-        </td>
-        </tr>
-        </tr>
-    	</table>
-    	</form>
-        </td>
-        </tr>
-        </table>
-        </td>
-        <td width="50%">
-        <table class="inner_content_table">
-        <tr>
-        <td>
-        <table class="news_table" width="100%">
-        <tr class="title_general">
-        <td colspan="3" align="center">
-        Challenge Information
-        </td>
-    	</tr>
-        <tr colspan="2" width="100%">
-        <td>
-        <table class="news_item_table" width="100%" id="challengeTable">
         <%
-        DBObj challengeHead = (DBObj)myChallengesFull.get(0);
-        %>
-        <tr>
-        <td width="33%">
-        Challenge Name:
-        </td>
-        <td width="67%">
-        <input form="updateForm" type="hidden" name="prev_challenge_name" value="<%=challengeHead.getAttribute("challenge_name") %>"></input>
-        <input form="updateForm" style="width:90%" type="text" name="challenge_name" value="<%=challengeHead.getAttribute("challenge_name") %>"></input>
-        </td>
-        </tr>
-        <tr>
-        <td width="33%">
-        Open:
-        </td>
-        <td width="67%">
-        <input form="updateForm" style="width:90%" type="text" name="open_time" value="<%=challengeHead.getAttribute("open_time") %>"></input>
-        </td>
-        </tr>
-        <tr>
-        <td width="33%">
-        End:
-        </td>
-        <td width="67%">
-        <input form="updateForm" style="width:90%" type="text" name="end_time" value="<%=challengeHead.getAttribute("end_time") %>"></input>
-        </td>
-        </tr>
-        <tr>
-        <td width="33%">
-        Description:
-        </td>
-        <td width="67%">
-        <textarea form="updateForm" style="width:90%" name="description"><%=challengeHead.getAttribute("description") %></textarea>
-        </td>
-        </tr>
-        <%
-        for(int x=0; x<myChallengesFull.size(); x++)
+        challengeHead = (DBObj)myChallengesFull.get(0);
+        //boolean detailed = true;
+        if((((DBObj)myChallengesFull.get(0)).getAttribute("type")).equals("assignment"))
         {
-        	challengeHead = (DBObj)myChallengesFull.get(x);
-        	%>
-        	<tr>
-        	<td colspan="2">
-        	<table class="news_item_table" width="100%">
-        	<tr>
-        	<td width="33%">
-	        Command Number:
-	        </td>
-	        <td width="67%">
-	        <input form="updateForm" style="width:90%" type="text" name="command_order_<%=x %>" value="<%=challengeHead.getAttribute("command_order") %>"></input>
-	        </td>
-        	</tr>
-        	<tr>
-        	<td width="33%">
-	        Command:
-	        </td>
-	        <td width="67%">
-	        <input form="updateForm" style="width:90%" type="text" name="commandName_<%=x %>" value="<%=challengeHead.getAttribute("commandName") %>"></input>
-	        </td>
-        	</tr>
-        	<tr>
-        	<td width="33%">
-	        Arguments:
-	        </td>
-	        <td width="67%">
-	        <textarea form="updateForm" style="width:90%" name="command_<%=x %>"><%=challengeHead.getAttribute("command") %></textarea>
-	        </td>
-        	</tr>
-        	</table>
-        	</td>
-        	</tr>
-        	<%
+        	detailed = false;
+        }
+        //String nonDetailedAppend = "style=\"display:none;\"";
+        if(detailed)
+        {
+        	nonDetailedAppend = "";
         }
         %>
-        </table>
-        </td>
-        </tr>
-        <tr>
-        <td>
-        <table width="100%">
-        <tr>
-        <td width="50%">
-        <input form="updateForm" type="hidden" name="totalAdd" id="totalAdd" value="<%=myChallengesFull.size() - 1 %>"></input>
-        <input form="updateForm" type="button" value="Add Another Command" onclick="addAnotherCommand()"></input>
-        </td>
-        <td width="50%">
-        <div align="right">
+        </script>
+    	</table>
+    	</form>
+    	<%
+        }
+        }
+    	%>
+    	<div align="right">
         <input form="updateForm" type="submit" value="Submit"></input>
         </div>
         </td>
-        </tr>
-        </table>
-        </td>
-        </tr>
-        </table>
-        </td>
-        </tr>
-        </table>
-        </td>
         <td width="25%">
-        <table class="inner_content_table" width="100%">
-        <tr>
-        <td>
-        <table class="news_table" width="100%">
-        <tr class="title_general">
-        <td align="center">
-        Actions
-        </td>
-        </tr>
-        <tr width="100%:">
-        <td>
-        <table class="news_item_table" width="100%">
-        <tr>
-        <td width="100%">
-        <a href="viewGrades.jsp?challengeName=<%=(String)request.getParameter("challengeName") %>">
-        View Submissions
-        </a>
-        </td>
-    	</tr>
-    	<tr>
-    	<td>
-    	&nbsp;
-    	</td>
-    	</tr>
-    	<tr>
-        <td width="100%">
-        <a href="resetChallenge.jsp?challengeName=<%=(String)request.getParameter("challengeName") %>">
-        Reset Generated Code
-        </a>
-        </td>
-    	</tr>
-    	<tr>
-    	<td>
-    	&nbsp;
-    	</td>
-    	</tr>
-    	<tr>
-        <td width="100%">
-        <a href="deleteChallenge.jsp?challengeName=<%=(String)request.getParameter("challengeName") %>">
-        Delete Challenge
-        </a>
-        </td>
-    	</tr>
-    	</table>
-    	</td>
-    	</tr>
-    	</table>
-    	</td>
-    	</tr>
-        </table>
+       	
         </td>
     </tr>
 </table>

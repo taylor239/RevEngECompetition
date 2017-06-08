@@ -14,21 +14,14 @@
 	<tr>
     	<td width="25%">
         <table class="inner_content_table">
-        <tr>
-        <td>
-        <form id="updateForm" action="updateChallenge.jsp">
-        <table class="news_table" width="100%">
-        <tr class="title_general">
-        <td colspan="3" align="center">
-        Assign To
-        </td>
-    	</tr>
         <%
         ArrayList myChallengesFull = new ArrayList();
         //ArrayList challengeAssignment = new ArrayList();
         ArrayList alreadyAssignedList = new ArrayList();
         ArrayList allStudents = new ArrayList();
         ArrayList selectedDefault = new ArrayList();
+        ArrayList defaultChallenges = new ArrayList();
+        
         
         if(!hasUser || !(myUser.getAttribute("role").equals("admin")))
         {
@@ -44,11 +37,380 @@
         		System.out.println((String)myUser.getAttribute("email"));
         	}
         	
+        	defaultChallenges = myConnector.getChallengeDefaults((String)myUser.getAttribute("email"));
+        	
+        	DBObj headChallenge = (DBObj)defaultChallenges.get(0);
+        	
         	selectedDefault = myConnector.getChallengeDefault(request.getParameter("default"));
+        	
+        	if(selectedDefault == null || selectedDefault.isEmpty())
+        	{
+        		selectedDefault = myConnector.getChallengeDefault((String)headChallenge.getAttribute("challenge_name"));
+        	}
         	
 	        myChallengesFull = myConnector.getChallenge((String)request.getParameter("challengeName"), (String)myUser.getAttribute("email"));
 	        //challengeAssignment = myConnector.getChallengeAssignment((String)myUser.getAttribute("email"), (String)request.getParameter("challengeName"));
 	        allStudents = myConnector.getAdminStudents((String)myUser.getAttribute("email"));
+	        
+	      
+        }
+        %>
+        <script>
+        totalCommands = 0;
+        </script>
+        </table>
+        </td>
+        <td width="50%">
+        <form id="updateForm" action="updateChallenge.jsp">
+        <input type="hidden" name="new_type" value="assignment"></input>
+        <table class="inner_content_table">
+        <tr>
+        <td>
+        <%
+        	
+        	if(selectedDefault != null && !selectedDefault.isEmpty())
+        	{
+        	DBObj topLevel = (DBObj)selectedDefault.get(0);
+        %>
+        <table class="news_table" width="100%">
+        <tr class="title_general">
+        <td colspan="3" align="center">
+        Enter Assignment Information
+        </td>
+    	</tr>
+        <tr colspan="2" width="100%">
+        <td>
+        <table class="news_item_table" width="100%" id="challengeTable">
+        <tr>
+        <td width="100%" colspan="2">
+        <input form="updateForm" form="updateForm" style="width:100%" onfocus="clearText(this);" type="text" name="challenge_name" value="Assignment Name"></input>
+        </td>
+        </tr>
+        <tr>
+        <td width="10%" style="vertical-align:middle;">
+        Open
+        </td>
+        <td width="90%">
+        <input form="updateForm" style="width:100%" type="datetime-local" placeholder="mm-dd-yyyy hh:mm:ss" name="open_time"></input>
+        </td>
+        </tr>
+        <tr>
+        <td width="10%" style="vertical-align:middle;">
+        Close
+        </td>
+        <td width="90%">
+        <input form="updateForm" style="width:100%" type="datetime-local" placeholder="mm-dd-yyyy hh:mm:ss" name="end_time"></input>
+        </td>
+        </tr>
+        <tr>
+        <td width="100%" colspan="2">
+        <textarea rows="10" form="updateForm" style="width:100%" onfocus="clearText(this);" name="description">Instructions for students</textarea>
+        </td>
+        </tr>
+        <script>
+        totalCommands = <%=selectedDefault.size() %>;
+        </script>
+        <tr>
+        <td>
+        <table id="hiddenTable">
+        <%
+        for(int x=0; x<selectedDefault.size(); x++)
+        {
+        	DBObj curObj = (DBObj)selectedDefault.get(x);
+        	%>
+        	<tr style="display:none;">
+        	<td colspan="2">
+        	<table class="news_item_table" width="100%" style="display:none;">
+        	<tr style="display:none;">
+        	<td width="33%">
+	        Command Number:
+	        </td>
+	        <td width="67%">
+	        <input form="updateForm" style="width:90%" type="hidden" name="command_order_<%=x %>" value="<%=curObj.getAttribute("command_order") %>"></input>
+	        </td>
+        	</tr>
+        	<tr style="display:none;">
+        	<td width="33%">
+	        Command:
+	        </td>
+	        <td width="67%">
+	        <input form="updateForm" style="width:90%" type="hidden" name="commandName_<%=x %>" value="<%=curObj.getAttribute("commandName") %>"></input>
+	        </td>
+        	</tr>
+        	<tr style="display:none;">
+        	<td width="33%">
+	        Arguments:
+	        </td>
+	        <td width="67%">
+	        <input type="hidden" form="updateForm" style="width:90%" name="command_<%=x %>" value="<%=curObj.getAttribute("command") %>">
+	        </td>
+        	</tr>
+        	</table>
+        	</td>
+        	</tr>
+        	<%
+        }
+        %>
+        </table>
+        </td>
+        </tr>
+        </table>
+        </td>
+        </tr>
+        <tr>
+        <td>
+        <table width="100%">
+        <tr>
+        <td width="50%">
+        <input form="updateForm" type="hidden" name="totalAdd" id="totalAdd" value="<%=selectedDefault.size() - 1 %>"></input>
+        </td>
+        <td width="50%">
+        <div align="right">
+        
+        </div>
+        </td>
+        </tr>
+        </table>
+        </td>
+        </tr>
+        </table>
+        <%
+        	}
+        	else
+        	{
+        		%>
+        <table class="news_table" width="100%">
+        <tr class="title_general">
+        <td colspan="3" align="center">
+        Challenge Information
+        </td>
+    	</tr>
+        <tr colspan="2" width="100%">
+        <td>
+        <table class="news_item_table" width="100%" id="challengeTable">
+        <tr>
+        <td width="100%">
+        <div align="center">
+        Select a problem on the right and push "Submit" to load it.
+        </div>
+        </td>
+        </tr>
+        </table>
+        </td>
+        </tr>
+        </table>
+        		<%
+        	}
+        %>
+        </td>
+        </tr>
+        <tr>
+        <td width="100%">
+        <table class="news_table" width="100%">
+        <tr class="title_general">
+        <td colspan="3" align="center">
+        Select Problem
+        </td>
+    	</tr>
+    	<tr>
+        <td width="100%">
+        <div align="center">
+        <table>
+        <!--<select name="default" onchange="changeProblem(this)" width="100%">-->
+        <%
+        	HashMap doneMap = new HashMap();
+        	for(int x=0; x<defaultChallenges.size(); x++)
+        	{
+        		DBObj curChallenge = (DBObj)defaultChallenges.get(x);
+        		if(doneMap.containsKey(curChallenge.getAttribute("challenge_name")))
+        		{
+        			continue;
+        		}
+        		else
+        		{
+        			doneMap.put(curChallenge.getAttribute("challenge_name"), true);
+        		}
+        		
+        		String isSiteDefault = "";
+        		if(((String)curChallenge.getAttribute("administrator")).isEmpty())
+        		{
+        			isSiteDefault = " <b>(Tigress default)</b>";
+        		}
+        		
+        		String selectedItem = "";
+        		if(x==0)
+        		{
+        			selectedItem = "checked";
+        		}
+        %>
+        		<tr>
+        		<td>
+				<input onclick="changeProblem(this)" type="radio" name="default" value="<%=curChallenge.getAttribute("challenge_name") %>" <%=selectedItem %>><%=curChallenge.getAttribute("challenge_name") %><%=isSiteDefault %>
+				</input>
+				</td>
+				</tr>
+		<%
+        	}
+        	
+		%>
+		<!--</select>-->
+		</table>
+		</div>
+		</td>
+		</tr>
+		<script>
+		var problemDescs = {};
+		var problemCommands = {};
+		var problemCommandNum = {};
+		var problemCommandName = {};
+		<%
+			doneMap = new HashMap();
+			HashMap problemMaxMap = new HashMap();
+        	for(int x=0; x<defaultChallenges.size(); x++)
+        	{
+        		DBObj curChallenge = (DBObj)defaultChallenges.get(x);
+        		int max = 0;
+        		if(problemMaxMap.containsKey(curChallenge.getAttribute("challenge_name")))
+        		{
+        			max = (Integer)problemMaxMap.get(curChallenge.getAttribute("challenge_name"));
+        		}
+        		
+        		int newMax = (Integer)curChallenge.getAttribute("command_order");
+        		if(newMax > max)
+        		{
+        			problemMaxMap.put(curChallenge.getAttribute("challenge_name"), newMax);
+        		}
+        		
+        		%>
+        		problemCommands["<%=curChallenge.getAttribute("challenge_name") %>Command<%=curChallenge.getAttribute("command_order") %>"] = "<%=curChallenge.getAttribute("command") %>";
+        		problemCommandName["<%=curChallenge.getAttribute("challenge_name") %>Command<%=curChallenge.getAttribute("command_order") %>"] = "<%=curChallenge.getAttribute("commandName") %>";
+        		<%
+        		if(doneMap.containsKey(curChallenge.getAttribute("challenge_name")))
+        		{
+        			continue;
+        		}
+        		else
+        		{
+        			doneMap.put(curChallenge.getAttribute("challenge_name"), true);
+        		}
+        		//System.out.println(curChallenge.getAttributes());
+        %>
+				problemDescs["<%=curChallenge.getAttribute("challenge_name") %>"] = "<%=curChallenge.getAttribute("description") %>";
+		<%
+        	}
+        	
+        	Iterator curIterator = problemMaxMap.entrySet().iterator();
+        	while(curIterator.hasNext())
+        	{
+        		Map.Entry curEntry = (Map.Entry)curIterator.next();
+        		%>
+        		problemCommandNum["<%=curEntry.getKey() %>"] = <%=curEntry.getValue() %>;
+        		<%
+        	}
+        	
+		%>
+    	
+    	function changeProblem(selectEle)
+    	{
+    		//console.log(selectEle);
+    		//console.log(selectEle.value);
+    		var numCommands = problemCommandNum[selectEle.value];
+    		var hiddenTableHTML = "";
+    		for(var x=0; x<=numCommands; x++)
+    		{
+    			console.log(x);
+    			//console.log(problemCommandName[selectEle.value + "Command" + x]);
+    			//console.log(problemCommands[selectEle.value + "Command" + x]);
+    			hiddenTableHTML += "<tr style=\"display:none;\">\
+            	<td colspan=\"2\">\
+            	<table class=\"news_item_table\" width=\"100%\" style=\"display:none;\">\
+            	<tr style=\"display:none;\">\
+            	<td width=\"33%\">\
+    	        Command Number:\
+    	        </td>\
+    	        <td width=\"67%\">\
+    	        <input form=\"updateForm\" style=\"width:90%\" type=\"hidden\" name=\"command_order_" + x + "\" value=\"" + x + "\"></input>\
+    	        </td>\
+            	</tr>\
+            	<tr style=\"display:none;\">\
+            	<td width=\"33%\">\
+    	        Command:\
+    	        </td>\
+    	        <td width=\"67%\">\
+    	        <input form=\"updateForm\" style=\"width:90%\" type=\"hidden\" name=\"commandName_" + x + "\" value=\"" + problemCommandName[selectEle.value + "Command" + x] + "\"></input>\
+    	        </td>\
+            	</tr>\
+            	<tr style=\"display:none;\">\
+            	<td width=\"33%\">\
+    	        Arguments:\
+    	        </td>\
+    	        <td width=\"67%\">\
+    	        <input type=\"hidden\" form=\"updateForm\" style=\"width:90%\" name=\"command_" + x + "\" value=\"" + problemCommands[selectEle.value + "Command" + x] + "\">\
+    	        </td>\
+            	</tr>\
+            	</table>\
+            	</td>\
+            	</tr>\
+            	"
+    		}
+    		document.getElementById("hiddenTable").innerHTML = hiddenTableHTML;
+    		document.getElementById("descriptionCell").innerHTML = problemDescs[selectEle.value];
+    	}
+    	
+    	</script>
+		<tr>
+		<td>
+		<div align="center">
+		<b>Problem Description</b>
+		</div>
+		</td>
+		</tr>
+		<tr>
+		<td id="descriptionCell">
+		<%
+		DBObj firstChallenge = (DBObj)defaultChallenges.get(0);
+        	%>
+        	<%=firstChallenge.getAttribute("description") %>
+        	<%
+        
+        %>
+		</td>
+		</tr>
+    	</table>
+        <tr>
+        <td width="100%">
+        <table class="news_table" width="100%">
+        <tr class="title_general">
+        <td colspan="3" align="center">
+        Assign To
+        </td>
+    	</tr>
+    	<%
+        //ArrayList myChallengesFull = new ArrayList();
+        //ArrayList challengeAssignment = new ArrayList();
+        //ArrayList alreadyAssignedList = new ArrayList();
+        //ArrayList allStudents = new ArrayList();
+        //ArrayList selectedDefault = new ArrayList();
+        
+        if(!hasUser || !(myUser.getAttribute("role").equals("admin")))
+        {
+        	%>
+        	<meta http-equiv="refresh" content="0; url=index.jsp" />
+        	<%
+        }
+        else
+        {
+        	if(verbose)
+        	{
+        		System.out.println((String)request.getParameter("challengeName"));
+        		System.out.println((String)myUser.getAttribute("email"));
+        	}
+        	
+        	//selectedDefault = myConnector.getChallengeDefault(request.getParameter("default"));
+        	
+	        //myChallengesFull = myConnector.getChallenge((String)request.getParameter("challengeName"), (String)myUser.getAttribute("email"));
+	        //challengeAssignment = myConnector.getChallengeAssignment((String)myUser.getAttribute("email"), (String)request.getParameter("challengeName"));
+	        //allStudents = myConnector.getAdminStudents((String)myUser.getAttribute("email"));
 	        
 	        if(verbose)
 	        {
@@ -117,6 +479,10 @@
         			{
         				document.getElementById("studentCheck_" + x).checked = true;
         			}
+	        		for(var x=0; x<numCourses; x++)
+	        		{
+	        			document.getElementById("courseCheck" + x).checked = true;
+	        		}
 	        	}
 	        	
 	        	function deselectAllStudents()
@@ -125,6 +491,10 @@
         			{
         				document.getElementById("studentCheck_" + x).checked = false;
         			}
+	        		for(var x=0; x<numCourses; x++)
+	        		{
+	        			document.getElementById("courseCheck" + x).checked = false;
+	        		}
 	        	}
 	        
 	        </script>
@@ -132,7 +502,7 @@
 	    	<tr colspan="3">
 	    	<td width="100%">
 	    	<table class="news_item_table" width="100%">
-	    	<tr>
+	    	<tr style="display:none;">
 	    	<td width="45%">
 	    	<input type="button" value="Select All" onclick="selectAllStudents()"></input>
 	    	</td>
@@ -147,6 +517,10 @@
 	    	</table>
 	    	</td>
 	    	</tr>
+	        
+	        <script>
+	        var numCourses = <%=courseNames.size() %>;
+	        </script>
 	        
 	        <%
 	        for(int x=0; x<courseNames.size(); x++)
@@ -256,7 +630,8 @@
 	    	<table class="news_item_table" width="100%">
 	    	<tr>
 	    	<td width="10%">
-	    	<img src="plus.png" class="boxedChar" onclick="showPlus<%=courseName %>(this)" />
+	    	<input type="checkbox" id="courseCheck<%=y %>" onclick="selectCheck<%=courseName %>(this)"></input>
+	    	<!-- <img src="plus.png" class="boxedChar" onclick="showPlus<%=courseName %>(this)" /> -->
 	    	</td>
 	    	<td width="40%">
 	    	<b><%=courseName %></b>
@@ -266,7 +641,7 @@
 	    	</td>
 	    	<td width="25%">
 	    	<div align="right">
-	    	<input type="checkbox" onclick="selectCheck<%=courseName %>(this)"></input>
+	    	<!-- <input type="checkbox" onclick="selectCheck<%=courseName %>(this)"></input> -->
 	    	</div>
 	    	</td>
 	    	</tr>
@@ -340,283 +715,21 @@
 	        }
         }
         %>
-        <script>
-        totalCommands = 0;
-        </script>
-        <tr>
-        <td colspan="3">
-        <div align="center">
-        <input type="submit", value="Submit"></input>
-        </div>
-        </td>
-        </tr>
-        </tr>
-    	</table>
-    	</form>
-        </td>
-        </tr>
-        </table>
-        </td>
-        <td width="50%">
-        <table class="inner_content_table">
-        <tr>
-        <td>
-        <%
-        	if(selectedDefault != null && !selectedDefault.isEmpty())
-        	{
-        	DBObj topLevel = (DBObj)selectedDefault.get(0);
-        %>
-        <table class="news_table" width="100%">
-        <tr class="title_general">
-        <td colspan="3" align="center">
-        Challenge Information
-        </td>
-    	</tr>
-        <tr colspan="2" width="100%">
-        <td>
-        <table class="news_item_table" width="100%" id="challengeTable">
-        <tr>
-        <td width="33%">
-        Challenge Name:
-        </td>
-        <td width="67%">
-        <input form="updateForm" form="updateForm" style="width:90%" type="text" name="challenge_name" value="<%=topLevel.getAttribute("challenge_name") %> (change this)"></input>
-        </td>
-        </tr>
-        <tr>
-        <td width="33%">
-        Open:
-        </td>
-        <td width="67%">
-        <input form="updateForm" style="width:90%" type="text" name="open_time" value="Start Time (in YYYY-MM-DD HH:MM:SS.S)"></input>
-        </td>
-        </tr>
-        <tr>
-        <td width="33%">
-        End:
-        </td>
-        <td width="67%">
-        <input form="updateForm" style="width:90%" type="text" name="end_time" value="End Time (in YYYY-MM-DD HH:MM:SS.S)"></input>
-        </td>
-        </tr>
-        <tr>
-        <td width="33%">
-        Description:
-        </td>
-        <td width="67%">
-        <textarea form="updateForm" style="width:90%" name="description"><%=topLevel.getAttribute("description") %></textarea>
-        </td>
-        </tr>
-        <script>
-        totalCommands = <%=selectedDefault.size() %>;
-        </script>
-        <%
-        for(int x=0; x<selectedDefault.size(); x++)
-        {
-        	DBObj curObj = (DBObj)selectedDefault.get(x);
-        	%>
-        	<tr style="display:none;">
-        	<td colspan="2">
-        	<table class="news_item_table" width="100%" style="display:none;">
-        	<tr style="display:none;">
-        	<td width="33%">
-	        Command Number:
-	        </td>
-	        <td width="67%">
-	        <input form="updateForm" style="width:90%" type="hidden" name="command_order_<%=x %>" value="<%=curObj.getAttribute("command_order") %>"></input>
-	        </td>
-        	</tr>
-        	<tr style="display:none;">
-        	<td width="33%">
-	        Command:
-	        </td>
-	        <td width="67%">
-	        <input form="updateForm" style="width:90%" type="hidden" name="commandName_<%=x %>" value="<%=curObj.getAttribute("commandName") %>"></input>
-	        </td>
-        	</tr>
-        	<tr style="display:none;">
-        	<td width="33%">
-	        Arguments:
-	        </td>
-	        <td width="67%">
-	        <input type="hidden" form="updateForm" style="width:90%" name="command_<%=x %>" value="<%=curObj.getAttribute("command") %>">
-	        </td>
-        	</tr>
-        	</table>
-        	</td>
-        	</tr>
-        	<%
-        }
-        %>
         </table>
         </td>
         </tr>
         <tr>
-        <td>
-        <table width="100%">
-        <tr>
-        <td width="50%">
-        <input form="updateForm" type="hidden" name="totalAdd" id="totalAdd" value="<%=selectedDefault.size() - 1 %>"></input>
-        </td>
-        <td width="50%">
+        <td width="100%">
         <div align="right">
         <input form="updateForm" type="submit" value="Submit"></input>
         </div>
         </td>
         </tr>
         </table>
-        </td>
-        </tr>
-        </table>
-        <%
-        	}
-        	else
-        	{
-        		%>
-        <table class="news_table" width="100%">
-        <tr class="title_general">
-        <td colspan="3" align="center">
-        Challenge Information
-        </td>
-    	</tr>
-        <tr colspan="2" width="100%">
-        <td>
-        <table class="news_item_table" width="100%" id="challengeTable">
-        <tr>
-        <td width="100%">
-        <div align="center">
-        Select a problem on the right and push "Submit" to load it.
-        </div>
-        </td>
-        </tr>
-        </table>
-        </td>
-        </tr>
-        </table>
-        		<%
-        	}
-        %>
-        </td>
-        </tr>
-        </table>
+        </form>
         </td>
         <td width="25%">
-        <table class="inner_content_table">
-        <tr>
-        <td>
-        <table class="news_table" width="100%">
-        <tr class="title_general">
-        <td colspan="3" align="center">
-        Options
-        </td>
-        </tr>
-        <tr colspan="3" width="100%:">
-        <td>
-        <table class="news_item_table" width="100%">
-        <tr>
-        <td width="100%">
-        <div align="center">
-        <b>
-        Load Default Settings
-        </b>
-        </div>
-        </td>
-    	</tr>
-    	<script>
-    	
-    	function changeProblem(selectEle)
-    	{
-    		//console.log(selectEle);
-    		//console.log(selectEle.value);
-    		document.getElementById("descriptionCell").innerHTML = problemDescs[selectEle.value];
-    	}
-    	
-    	</script>
-    	<form action="quickCreate.jsp">
-    	<tr>
-        <td width="100%">
-        <div align="center">
-        <select name="default" onchange="changeProblem(this)" width="100%">
-        <%
-        	ArrayList defaultChallenges = myConnector.getChallengeDefaults();
-        	HashMap doneMap = new HashMap();
-        	for(int x=0; x<defaultChallenges.size(); x++)
-        	{
-        		DBObj curChallenge = (DBObj)defaultChallenges.get(x);
-        		if(doneMap.containsKey(curChallenge.getAttribute("challenge_name")))
-        		{
-        			continue;
-        		}
-        		else
-        		{
-        			doneMap.put(curChallenge.getAttribute("challenge_name"), true);
-        		}
-        %>
-				<option value="<%=curChallenge.getAttribute("challenge_name") %>"><%=curChallenge.getAttribute("challenge_name") %></option>
-		<%
-        	}
-        	
-		%>
-		</select>
-		</div>
-		</td>
-		</tr>
-		<script>
-		var problemDescs = {};
-		<%
-			doneMap = new HashMap();
-        	for(int x=0; x<defaultChallenges.size(); x++)
-        	{
-        		DBObj curChallenge = (DBObj)defaultChallenges.get(x);
-        		if(doneMap.containsKey(curChallenge.getAttribute("challenge_name")))
-        		{
-        			continue;
-        		}
-        		else
-        		{
-        			doneMap.put(curChallenge.getAttribute("challenge_name"), true);
-        		}
-        %>
-				problemDescs["<%=curChallenge.getAttribute("challenge_name") %>"] = "<%=curChallenge.getAttribute("description") %>";
-		<%
-        	}
-        	
-		%>
-		</script>
-		<tr>
-		<td>
-		<div align="center">
-		<b>Problem Description</b>
-		</div>
-		</td>
-		</tr>
-		<tr>
-		<td id="descriptionCell">
-		<%
-		DBObj firstChallenge = (DBObj)defaultChallenges.get(0);
-        	%>
-        	<%=firstChallenge.getAttribute("description") %>
-        	<%
         
-        %>
-		</td>
-		</tr>
-		<tr>
-		<td>
-		<div align="center">
-		<input type="submit" value="Submit">
-		</input>
-		</div>
-        </td>
-    	</tr>
-    	</form>
-    	</table>
-    	</td>
-    	</tr>
-    	</table>
-    	</td>
-    	</tr>
-        </table>
         </td>
     </tr>
 </table>

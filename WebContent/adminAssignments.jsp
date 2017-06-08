@@ -49,7 +49,7 @@
     </tr>
     -->
 	<tr>
-    	<td width="10%">
+    	<td width="25%">
     	<!--
         <table class="inner_content_table">
         <tr>
@@ -93,7 +93,7 @@
         </table>
         </td>
         -->
-        <td width="80%">
+        <td width="50%">
         <table class="inner_content_table">
         <!--
         <tr>
@@ -142,7 +142,7 @@
         <table class="news_table" width="100%">
         <tr class="title_general">
         <td colspan="3" align="center">
-        Challenges
+        Assignments
         </td>
     	</tr>
         <tr colspan="3" width="100%:">
@@ -159,6 +159,7 @@
         else if(myUser.getAttribute("role").equals("student"))
         {
         ArrayList myChallenges = myConnector.getChallenges((String)myUser.getAttribute("email"));
+        //ArrayList myChallenges = myConnector.getChallengeDefaults((String)myUser.getAttribute("email"));
         if(verbose)
         {
         	System.out.println(myChallenges);
@@ -173,7 +174,7 @@
         for(int x=0; x<keys.size(); x++)
         {
         	String tmp=(String)keys.get(x);
-        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile"))
+        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type"))
         	{
         		keys.remove(x);
         		x--;
@@ -181,6 +182,10 @@
         }
         keys.add("open_time");
         keys.add("end_time");
+        if(verbose)
+        {
+        	System.out.println(keys);
+        }
         for(int x=0; x<keys.size(); x++)
         {
         %>
@@ -207,6 +212,10 @@
         <%
         for(int x=0; x<myChallenges.size(); x++)
         {
+        	//if(!((DBObj)myChallenges.get(x)).getAttribute("type").equals("assignment"))
+        	//{
+        	//	continue;
+        	//}
         %>
         <tr>
 	        <%
@@ -247,14 +256,16 @@
         }
         else if(myUser.getAttribute("role").equals("admin"))
         {
+        	
         	ArrayList myChallenges = myConnector.getAdminChallenges((String)myUser.getAttribute("email"));
         	if(verbose)
             {
+        		System.out.println("Got admin");
             	System.out.println(myChallenges);
             }
             ArrayList keys = ((DBObj)myChallenges.get(0)).getAttributeNames();
             ConcurrentHashMap translationMap = new ConcurrentHashMap();
-            translationMap.put("admin_email", "Instructor");
+            //translationMap.put("admin_email", "Instructor");
             translationMap.put("challenge_name", "Challenge");
             translationMap.put("open_time", "Open");
             translationMap.put("end_time", "Close");
@@ -262,7 +273,7 @@
             for(int x=0; x<keys.size(); x++)
             {
             	String tmp=(String)keys.get(x);
-            	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile"))
+            	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || tmp.equals("admin_email"))
             	{
             		keys.remove(x);
             		x--;
@@ -270,10 +281,14 @@
             }
             keys.add("open_time");
             keys.add("end_time");
+            if(verbose)
+            {
+            	System.out.println(keys);
+            }
             for(int x=0; x<keys.size(); x++)
             {
             %>
-            <td width="<% out.print(100/(double)(keys.size() + 1)); %>%">
+            <td width="<% out.print(100/(double)(keys.size() + 2)); %>%">
             <div align="center">
             <b>
             <%
@@ -292,10 +307,17 @@
             <%
             }
             %>
-            <td width="<% out.print(100/(double)(keys.size() + 1)); %>%">
+            <td width="<% out.print(100/(double)(keys.size() + 2)); %>%">
             <div align="center">
             <b>
             Manage
+            </b>
+            </div>
+            </td>
+            <td width="<% out.print(100/(double)(keys.size() + 2)); %>%">
+            <div align="center">
+            <b>
+            Submissions
             </b>
             </div>
             </td>
@@ -304,14 +326,18 @@
             String lastName = "";
             for(int x=0; x<myChallenges.size(); x++)
             {
+            	//if(!((DBObj)myChallenges.get(x)).getAttribute("type").equals("assignment"))
+            	//{
+            	//	continue;
+            	//}
             %>
             <tr>
     	        <%
     	        for(int y=0; y<keys.size(); y++)
     	        {
     	        %>
-    	        <td width="<% out.print(100/(double)keys.size()); %>%">
-    	        <div align="center">
+    	        <td width="<% out.print(100/((double)keys.size() + 2)); %>%">
+    	        <div align="left">
     	        <%
     	        	if(keys.get(y).equals("open_time") || keys.get(y).equals("end_time"))
     	        	{
@@ -322,11 +348,11 @@
     	        	{
     	        		lastName = (String)((DBObj)myChallenges.get(x)).getAttribute(keys.get(y));
     	        		%>
-    	        		<a href="viewChallenge.jsp?challengeName=<%= ((DBObj)myChallenges.get(x)).getAttribute(keys.get(y)) %>">
+    	        		<!--<a href="viewChallenge.jsp?challengeName=<%= ((DBObj)myChallenges.get(x)).getAttribute(keys.get(y)) %>">-->
     	        		<%
     	        		out.print(((DBObj)myChallenges.get(x)).getAttribute(keys.get(y)));
     	        		%>
-    	        		</a>
+    	        		<!-- </a>-->
     	        		<%
     	        	}
     	        	else
@@ -339,10 +365,17 @@
     	        <%
     	        }
     	        %>
-    	        <td width="<% out.print(100/(double)keys.size()); %>%">
-    	        <div align="center">
+    	        <td width="<% out.print(100/((double)keys.size() + 2)); %>%">
+    	        <div align="left">
     	        <a href="manageChallenge.jsp?challengeName=<%= lastName %>">
     	        Manage
+    	        </a>
+    	        </div>
+    	        </td>
+    	        <td width="<% out.print(100/((double)keys.size() + 2)); %>%">
+    	        <div align="left">
+    	        <a href="downloadAll?challengeName=<%= lastName %>">
+    	        Download All
     	        </a>
     	        </div>
     	        </td>
@@ -359,7 +392,7 @@
         </tr>
         </table>
         </td>
-        <td width="10%">
+        <td width="25%">
         <!--
         <table class="inner_content_table">
         <tr>

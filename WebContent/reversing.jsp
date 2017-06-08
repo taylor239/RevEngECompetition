@@ -12,45 +12,19 @@
 <%@include file="./WEB-INF/includes/mainPane.jsp" %>
 <table id="inner_content">
 	<tr>
-    	<td colspan="3" class="no_bottom_padding">
-    	<div align="center">
-    	<table id="page_title_table_row">
-    	<tr>
-    	<td>
-        <div align="center" id="inner_content_title">
-        <%
-        if(verbose)
-        {
-        	System.out.println("Got to hasUser conditional");
-        }
-		if(!hasUser)
-		{
-		%>
-        Welcome to the Tigress Challenge Engine
-        <%
-		}
-		else
-		{
-		%>
-        Welcome back, <% out.print(displayName); %>!
-        <%
-		}
-		%>
-        </div>
-        <div align="center" id="inner_content_slogan">
-        Obfuscation Made Easy</div>
-        </td>
-        </tr>
-        </table>
-        </div>
-        </td>
-    </tr>
-	<tr>
     	<td width="25%">
+        
+        </td>
+        <td width="50%">
         <table class="inner_content_table" width="100%">
         <tr>
         <td>
         <table class="news_table">
+        <tr class="title_general">
+        <td align="center">
+        Reverse Engineering Resources
+        </td>
+    	</tr>
         <tr class="title_general">
         <td align="center">
         Downloads
@@ -73,8 +47,6 @@
         </td>
         </tr>
         </table>
-        </td>
-        <td width="50%">
         <table class="inner_content_table">
         <tr>
         <td>
@@ -90,13 +62,13 @@
         <tr>
         <td>
         <p>
-        Provided here is a virtual machine image equipped with numerous security tools, including several reversing tools.  The image is based on <a href="https://www.kali.org/">Kali Linux</a> but has several additional tools installed, including the angr Python module and IDA (demo).
+        Provided here is a virtual machine image equipped with numerous security tools, including several reversing tools.  The image is based on <a href="https://www.kali.org/">Kali Linux</a> but has several additional tools installed, including the angr Python module.
         </p><br />
         <p>
         To use this virtual machine, first download it via the link on the left.  Note that the file is about 4 GB and will take some time to download.  After downloading and extracting the image, use your choice of .OVF compliant virtual machine software to run the distribution.  The password for root is toor.
         </p><br />
         <p>
-        For information regarding any of the Kali tools, please view the Kali website (linked above).  Additional information on angr may be found <a href="http://angr.io/">here</a>.  Information on IDA may be found <a href="https://www.hex-rays.com/products/ida/support/download_demo.shtml">here</a>.
+        For information regarding any of the Kali tools, please view the Kali website (linked above).  Additional information on angr may be found <a href="http://angr.io/">here.</a>
         </p><br />
         <p>
         <table width="100%">
@@ -151,62 +123,7 @@
         </td>
         <td width="25%">
         <table class="inner_content_table">
-        <tr>
-        <td>
-        <%
-        if(verbose)
-        {
-        	System.out.println("Got to hasUser conditional");
-        }
-		if(!hasUser)
-		{
-		%>
-        	<table class="news_table" width="100%">
-            <tr class="title_general">
-            <td>
-        	<div align="center">Login<br /></div>
-            </td>
-            </tr>
-            </table>
-            <table class="news_item_table" width="100%">
-            <tr>
-            <td>
-        	<%@include file="./WEB-INF/includes/loginWindow.jsp" %>
-            </td>
-            </tr>
-            </table>
-        <%
-		}
-		else
-		{
-		%>
-        	<table class="news_table" width="100%">
-            <tr class="title_general">
-            <td>
-        	<div align="center">Logout<br /></div>
-            </td>
-            </tr>
-            </table>
-        	<table class="news_item_table" width="100%">
-            <tr>
-            <td>
-        	<div align="center">Hi there, <%=displayName %>! Your last visit was <%
-				java.util.Date logonDate=(java.util.Date)myUser.getAttribute("previousVisit");
-				out.print(dateFormat.format(logonDate));
-				%>.<br />Not you?<br /></div>
-            <%@include file="./WEB-INF/includes/logoutWindow.jsp" %>
-            </td>
-            </tr>
-            </table>
-        <%
-		}
-		if(verbose)
-        {
-        	System.out.println("Got past hasUser conditional");
-        }
-		%>
-        </td>
-        </tr>
+        
         </table>
         </td>
     </tr>

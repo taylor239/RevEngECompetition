@@ -11,82 +11,11 @@
 <body>
 <%@include file="./WEB-INF/includes/mainPane.jsp" %>
 <table id="inner_content">
-	<tr>
-    	<td colspan="3" class="no_bottom_padding">
-    	<div align="center">
-    	<table id="page_title_table_row">
-    	<tr>
-    	<td>
-        <div align="center" id="inner_content_title">
-        <%
-        
-        if(verbose)
-        {
-        	System.out.println("Got to hasUser conditional");
-        }
-		if(!hasUser)
-		{
-		%>
-        Welcome to the Tigress Challenge Engine
-        <%
-		}
-		else
-		{
-		%>
-        Welcome back, <% out.print(displayName); %>!
-        <%
-		}
-		%>
-        </div>
-        <div align="center" id="inner_content_slogan">
-        Obfuscation Made Easy
-        </div>
-        </td>
-        </tr>
-        </table>
-        </div>
-        </td>
-    </tr>
     
 	<tr>
     	<td width="25%">
         <table class="inner_content_table">
-        <tr>
-        <td>
-        <table class="news_table" width="100%">
-        <tr class="title_general">
-        <td colspan="3" align="center">
-        Actions
-        </td>
-        </tr>
-        <tr colspan="3" width="100%:">
-        <td>
-        <table class="news_item_table" width="100%">
-        <tr>
-        <td width="100%">
-        <a href="manageChallenge.jsp?challengeName=<%=(String)request.getParameter("challengeName") %>">
-        Back
-        </a>
-        </td>
-    	</tr>
-    	<tr>
-    	<td>
-    	&nbsp;
-    	</td>
-    	</tr>
-    	<tr>
-        <td width="100%">
-        <a href="downloadAll?challengeName=<%=(String)request.getParameter("challengeName") %>">
-        Download All
-        </a>
-        </td>
-    	</tr>
-    	</table>
-    	</td>
-    	</tr>
-    	</table>
-    	</td>
-    	</tr>
+        
     	</table>
         <%
         ArrayList myChallengesFull = new ArrayList();
@@ -156,39 +85,65 @@
         Submissions for <%=challengeHead.getAttribute("challenge_name") %>
         </td>
     	</tr>
+    	<tr colspan="2" width="100%">
+    	<td>
+    	<div align="center">
+    	<a href="downloadAll?challengeName=<%=(String)request.getParameter("challengeName") %>">
+        Download All
+        </a>
+        </div>
+    	</td>
+    	</tr>
         <tr colspan="2" width="100%">
         <td>
         <table class="news_item_table" width="100%" id="challengeTable">
         <tr>
-        <td width="20%">
+        <td width="25%">
         <div align="center">
         <b>
         Student
         </b>
         </div>
         </td>
-        <td width="20%">
+        <td width="25%">
         <div align="center">
         <b>
-        Gen
+        Code Generated
         </b>
         </div>
         </td>
-        <td width="20%">
+        <td width="25%">
         <div align="center">
         <b>
-        Timestamp
+        Last Submission
         </b>
         </div>
         </td>
-        <td width="20%">
+        <td width="25%">
         <div align="center">
         <b>
         Download
         </b>
         </div>
         </td>
-        <td width="20%">
+        <td width="25%">
+        <div align="center">
+        <b>
+        Late
+        </b>
+        </div>
+        </td>
+        <!--
+        <td width="16%">
+        <div align="center">
+        <b>
+        View
+        </b>
+        </div>
+        </td>
+        -->
+        <!--
+        <td width="16%">
         <div align="center">
         <b>
         Grade
@@ -196,6 +151,7 @@
         </div>
         </td>
         </tr>
+        -->
         <%
 	        for(int x=0; x<challengeAssignment.size(); x++)
 	        {
@@ -211,7 +167,7 @@
 	        	<%
 	        	if((Integer)curObj.getAttribute("code_generated") == 1)
 	        	{
-	        		out.print("X");
+	        		out.print("&#10004;");
 	        	}
 	        	%>
 	        	</b>
@@ -221,6 +177,7 @@
 	        	<div align="center">
 	        	<%
 	        	//if(curObj.getAttribute("submission_time") != null)
+	        	boolean lateSubmission = false;
 	        	{
 	        		if(curObj.getAttribute("submissionTime") instanceof java.sql.Timestamp)
 	        		{
@@ -228,6 +185,7 @@
 	        			java.sql.Timestamp submitTime = (java.sql.Timestamp)curObj.getAttribute("submissionTime");
 	        			if(endTime.before(submitTime))
 	        			{
+	        				lateSubmission = true;
 	        				%>
 	        				<font color="red">
 	        				<%
@@ -260,25 +218,48 @@
 	        	</div>
 	        	</td>
 	        	<td style="vertical-align:middle">
+	        	<div align="center">
+	        	<%
+	        	if(lateSubmission)
+	        	{
+	        	%>
+	        	<b>
+	        	&#10060;
+	        	</b>
+	        	<%
+	        	}
+	        	%>
+	        	</div>
+	        	</td>
+	        	<!--
+	        	<td style="vertical-align:middle">
+	        	<div align="center">
+	        	<a href="viewSubmission?challengeName=<%=request.getParameter("challengeName") %>&studentEmail=<%=curObj.getAttribute("email") %>">View</a>
+	        	</div>
+	        	</td>
+	        	-->
+	        	<!--
+	        	<td style="vertical-align:middle">
 	        	<input form="updateForm" style="width:90%" type="text" name="grade_<%= curObj.getAttribute("email")%>" value="<%=curObj.getAttribute("grade") %>"></input>
 	        	</td>
+	        	-->
 	        	</tr>
 	        	<%
 	        	if(x + 1 <challengeAssignment.size())
 	        	{
 	        	%>
 	        	<tr>
-	        	<td colspan="5">
+	        	<td colspan="6">
 	        	&nbsp;
 	        	</td>
 	        	</tr>
 	        	<tr>
-	        	<td colspan="5">
+	        	<td colspan="6">
 	        	<hr></hr>
 	        	</td>
 	        	</tr>
 	        	<tr>
-	        	<td colspan="5">
+	        	<td colspan="6">
 	        	&nbsp;
 	        	</td>
 	        	</tr>
@@ -295,7 +276,9 @@
         <tr>
         <td width="100%">
         <div align="center">
+        <!--
         <input form="updateForm" type="submit" value="Submit Grades"></input>
+        -->
         </div>
         </td>
         </tr>
@@ -309,64 +292,7 @@
         </table>
         </td>
         <td width="25%">
-        <table class="inner_content_table">
-        <tr>
-        <td>
-        <%
-        if(verbose)
-        {
-        	System.out.println("Got to hasUser conditional");
-        }
-		if(!hasUser)
-		{
-		%>
-        	<table class="news_table" width="100%">
-            <tr class="title_general">
-            <td>
-        	<div align="center">Login<br /></div>
-            </td>
-            </tr>
-            </table>
-            <table class="news_item_table" width="100%">
-            <tr>
-            <td>
-        	<%@include file="./WEB-INF/includes/loginWindow.jsp" %>
-            </td>
-            </tr>
-            </table>
-        <%
-		}
-		else
-		{
-		%>
-        	<table class="news_table" width="100%">
-            <tr class="title_general">
-            <td>
-        	<div align="center">Logout<br /></div>
-            </td>
-            </tr>
-            </table>
-        	<table class="news_item_table" width="100%">
-            <tr>
-            <td>
-        	<div align="center">Hi there, <%=displayName %>! Your last visit was <%
-				java.util.Date logonDate=(java.util.Date)myUser.getAttribute("previousVisit");
-				out.print(dateFormat.format(logonDate));
-				%>.<br />Not you?<br /></div>
-            <%@include file="./WEB-INF/includes/logoutWindow.jsp" %>
-            </td>
-            </tr>
-            </table>
-        <%
-		}
-		if(verbose)
-        {
-        	System.out.println("Got past hasUser conditional");
-        }
-		%>
-        </td>
-        </tr>
-        </table>
+        
         </td>
     </tr>
 </table>
