@@ -282,7 +282,7 @@
 	        else
 	        {
 	        %>
-	        <a href="ChallengeObfuscatedFileServer?challengeName=<%= ((DBObj)myChallenges.get(0)).getAttribute("challenge_name") %>">
+	        <a href="ChallengeObfuscatedFileServer?challengeName=<%= ((DBObj)myChallenges.get(x)).getAttribute("challenge_name") %>">
 	        Download
 	        </a>
 	        <%
