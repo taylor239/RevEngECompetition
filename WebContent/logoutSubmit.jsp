@@ -23,7 +23,7 @@
 	%>
 <meta http-equiv="refresh" content="0;url=index.jsp">
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-<title>Tigress</title>
+<title>RevEngE</title>
 
 </head>
 <body>

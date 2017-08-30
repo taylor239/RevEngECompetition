@@ -31,7 +31,7 @@
       <td class="top_button" onclick="window.document.location='studentInfo.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">
       For Students
         <ul onclick="event.stopPropagation();">
-        <li onclick="window.document.location=studentInfo.jsp">
+        <li onclick="window.document.location='studentInfo.jsp;'">
 		Information
 		</li>
 		<li onclick="window.document.location='myChallenges.jsp';">
@@ -53,7 +53,7 @@
       <td class="top_button" onclick="window.document.location='studentInfo.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">
       For Students
         <ul onclick="event.stopPropagation();">
-		<li onclick="window.document.location=studentInfo.jsp">
+		<li onclick="window.document.location='studentInfo.jsp'">
 		Information
 		</li>
 		<li class="greyed">
@@ -78,7 +78,7 @@
       For Instructors
       <ul onclick="event.stopPropagation();">
       
-      	<li onclick="informationInstructor.jsp">
+      	<li onclick="window.document.location='informationInstructor.jsp';">
 		Information
 		</li>
       	
@@ -112,7 +112,7 @@
       For Instructors
       <ul onclick="event.stopPropagation();">
 		
-		<li onclick="informationInstructor.jsp">
+		<li onclick="window.document.location='informationInstructor.jsp';">
 		Information
 		</li>
       	

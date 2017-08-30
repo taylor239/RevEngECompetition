@@ -4,7 +4,7 @@
 <head>
 <%@include file="./WEB-INF/includes/includes.jsp" %>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-<title>Tigress</title>
+<title>RevEngE</title>
 
 </head>
 
@@ -173,7 +173,7 @@
         for(int x=0; x<keys.size(); x++)
         {
         	String tmp=(String)keys.get(x);
-        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || tmp.equals("grade") || tmp.equals("admin_email"))
+        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || tmp.equals("grade") || tmp.equals("admin_email") || tmp.equals("gradingFile"))
         	{
         		keys.remove(x);
         		x--;
@@ -320,7 +320,7 @@
             for(int x=0; x<keys.size(); x++)
             {
             	String tmp=(String)keys.get(x);
-            	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile"))
+            	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("gradingFile"))
             	{
             		keys.remove(x);
             		x--;

@@ -12,6 +12,7 @@
         ArrayList myChallengesEvaluation = myConnector.getChallengeEvaluation((String)request.getParameter("challengeName"), (String)myUser.getAttribute("email"));
         ServerManager nativeInterface = ServerManager.getInstance();
         String nativeOutput = "";
+        String nativeOutput2 = "";
         
         byte[] challengeMD5Bytes=((String)request.getParameter("challengeName")).getBytes();
         String challengeMD5="problem";
@@ -38,6 +39,14 @@
         String firstEvalPath="";
         String finalEvalFile="";
         String finalEvalPath="";
+        
+        String gradingFile="grading.c";
+        String gradingFilePath="";
+        
+        int seed = 0;
+        Random rand = new SecureRandom();
+        seed = rand.nextInt();
+        
         boolean isCompiled = false;
         for(int x=0; x<myChallengesFull.size()+myChallengesEvaluation.size(); x++)
         {
@@ -111,7 +120,7 @@
 	        	{
 	        		splitString=new String[0];
 	        	}
-	        	String[] cmdArray = new String[3+splitString.length];
+	        	String[] cmdArray = new String[4+splitString.length];
 	        	String[] secondCmdArray = null;
 	        	if(((DBObj)myChallengesFull.get(x)).getAttribute("commandName").equals("gcc"))
 	        	{
@@ -123,15 +132,23 @@
 	        	//cmdArray = new String[1];
 	        	//cmdArray[0]="cat";
 	        	//cmdArray[0]="./tigress";
-	        	cmdArray[0]=(String)((DBObj)myChallengesFull.get(x)).getAttribute("commandName");
+	        	String curCommandName=(String)((DBObj)myChallengesFull.get(x)).getAttribute("commandName");
+	        	
+	        	if(curCommandName.equals("gcc"))
+	        	{
+	        		cmdArray = new String[3+splitString.length];
+	        	}
+	        	
+	        	cmdArray[0] = curCommandName;
 	        	for(int y=0; y<splitString.length; y++)
 	        	{
 	        		cmdArray[y+1]=splitString[y];
 	        	}
 	        	if(cmdArray[0].equals("./tigress"))
 	        	{
-		        	cmdArray[splitString.length+1]="--out="+genDir.getAbsolutePath()+"/"+outputFile;
-		        	cmdArray[splitString.length+2]=genDir.getAbsolutePath()+"/"+prevFile;
+	        		cmdArray[splitString.length+1]="--Seed=" + seed;
+		        	cmdArray[splitString.length+2]="--out="+genDir.getAbsolutePath()+"/"+outputFile;
+		        	cmdArray[splitString.length+3]=genDir.getAbsolutePath()+"/"+prevFile;
 	        	}
 	        	else if(cmdArray[0].equals("gcc"))
 	        	{
@@ -149,6 +166,16 @@
 	        	////System.out.println("./tigress "+(String)((DBObj)myChallengesFull.get(x)).getAttribute("command")+" --out="+genDir.getAbsolutePath()+"/"+outputFile+" "+genDir.getAbsolutePath()+"/"+prevFile);
 	        	//String[] cmdArray = {"./tigress ", (String)((DBObj)myChallengesFull.get(x)).getAttribute("command"), "--out="+genDir.getAbsolut;ePath()+"/"+outputFile, genDir.getAbsolutePath()+"/"+prevFile};//{"printenv"};//, "export TIGRESS_HOME="+tmpFile.getAbsolutePath(), "printenv"};
 	        	nativeOutput = nativeInterface.executeCommand(cmdArray, tmpFile, environmentalVars);//, environmentalVars);
+	        	
+	        	if(first)
+	        	{
+	        		String[] gradingFileGenerator = new String[cmdArray.length + 1];
+	        		System.arraycopy(cmdArray, 0, gradingFileGenerator, 0, cmdArray.length);
+	        		gradingFileGenerator[splitString.length+2]="--out="+genDir.getAbsolutePath()+"/" + "grading.c";
+	        		gradingFileGenerator[splitString.length+4]="--RandomFunsDummyFailure=true";
+	        		nativeOutput2 = nativeInterface.executeCommand(gradingFileGenerator, tmpFile, environmentalVars);
+	        	}
+	        	
 	        	//System.out.println(nativeOutput);
 	        	if(secondCmdArray != null)
 	        	{
@@ -162,6 +189,7 @@
 	        	{
 	        		firstFile=outputFile;
 	        		firstPath=genDir.getAbsolutePath();
+	        		gradingFilePath=firstPath;
 	        		first=false;
 	        	}
 	        	finalFile=outputFile;
@@ -176,7 +204,7 @@
 	        	{
 	        		splitString=new String[0];
 	        	}
-	        	String[] cmdArray = new String[3+splitString.length];
+	        	String[] cmdArray = new String[4+splitString.length];
 	        	if(((Integer)((DBObj)myChallengesEvaluation.get(z)).getAttribute("input_output"))==0)
 	        	{
 	        		cmdArray = new String[1+splitString.length];
@@ -192,15 +220,23 @@
 	        	//cmdArray = new String[1];
 	        	//cmdArray[0]="cat";
 	        	//cmdArray[0]="./tigress";
-	        	cmdArray[0]=(String)((DBObj)myChallengesEvaluation.get(z)).getAttribute("commandName");
+	        	String curCommandName=(String)((DBObj)myChallengesFull.get(x)).getAttribute("commandName");
+	        	
+	        	if(curCommandName.equals("gcc"))
+	        	{
+	        		cmdArray = new String[3+splitString.length];
+	        	}
+	        	
+	        	cmdArray[0] = curCommandName;
 	        	for(int y=0; y<splitString.length; y++)
 	        	{
 	        		cmdArray[y+1]=splitString[y];
 	        	}
 	        	if(cmdArray[0].equals("./tigress"))
 	        	{
-		        	cmdArray[splitString.length+1]="--out="+genDir.getAbsolutePath()+"/"+outputFile;
-		        	cmdArray[splitString.length+2]=genDir.getAbsolutePath()+"/"+prevFile;
+	        		cmdArray[splitString.length+1]="--Seed=" + seed;
+		        	cmdArray[splitString.length+2]="--out="+genDir.getAbsolutePath()+"/"+outputFile;
+		        	cmdArray[splitString.length+3]=genDir.getAbsolutePath()+"/"+prevFile;
 	        	}
 	        	else if(cmdArray[0].equals("gcc"))
 	        	{
@@ -296,11 +332,32 @@
         	e.printStackTrace();
         }
         
+        File gradingFileDone=new File(firstPath+"/"+"grading.c");
+        byte[] gradingFileData=new byte[(int)gradingFileDone.length()];
+        try
+        {
+        	int bytesRead=0;
+        	InputStream fileInput = new BufferedInputStream(new FileInputStream(gradingFileDone));
+        	while(bytesRead < gradingFileData.length)
+        	{
+        		int remaining = gradingFileData.length - bytesRead;
+        		int tmpBytesRead = fileInput.read(gradingFileData, bytesRead, remaining);
+        		if(tmpBytesRead > 0)
+        		{
+        			bytesRead = bytesRead + tmpBytesRead;
+        		}
+        	}
+        	//System.out.println("Read "+bytesRead+" bytes from first");
+        }
+        catch(Exception e)
+        {
+        	e.printStackTrace();
+        }
         
         ArrayList myChallenges = new ArrayList();
         myChallenges.add(myChallengesFull.get(0));
-        myConnector.challengeParticipantCodeWritten((String)((DBObj)myChallenges.get(0)).getAttribute("challenge_name"), (String)((DBObj)myChallenges.get(0)).getAttribute("email"), firstFileData, finalFileData);
-        
+        myConnector.challengeParticipantCodeWritten((String)((DBObj)myChallenges.get(0)).getAttribute("challenge_name"), (String)((DBObj)myChallenges.get(0)).getAttribute("email"), firstFileData, gradingFileData, finalFileData);
+        System.out.println("Seed was: " + seed);
         //String forwardURL = "viewChallenge.jsp?challengeName="+((DBObj)myChallenges.get(0)).getAttribute("challenge_name");
         
         %>

@@ -1635,17 +1635,18 @@ public class DatabaseConnector
 	 * 
 	 * @param toUpdate
 	 */
-	public synchronized void challengeParticipantCodeWritten(String challengeName, String email, byte[] originalFile, byte[] obfuscatedFile)
+	public synchronized void challengeParticipantCodeWritten(String challengeName, String email, byte[] originalFile, byte[] gradingFile, byte[] obfuscatedFile)
 	{
-		String stmt="UPDATE `challenge_participant` SET `code_generated` = '1', `originalFile` = ?, `obfuscatedFile` = ? WHERE `challenge_participant`.`challenge_name` = ? AND `challenge_participant`.`email` = ?";
+		String stmt="UPDATE `challenge_participant` SET `code_generated` = '1', `originalFile` = ?,  `gradingFile` = ?, `obfuscatedFile` = ? WHERE `challenge_participant`.`challenge_name` = ? AND `challenge_participant`.`email` = ?";
 		try
 		{
 			getConnection();
 			PreparedStatement myStmt=connection.prepareStatement(stmt);
 			myStmt.setBytes(1, originalFile);
-			myStmt.setBytes(2, obfuscatedFile);
-			myStmt.setString(3, challengeName);
-			myStmt.setString(4, email);
+			myStmt.setBytes(2, gradingFile);
+			myStmt.setBytes(3, obfuscatedFile);
+			myStmt.setString(4, challengeName);
+			myStmt.setString(5, email);
 			myStmt.executeUpdate();
 			myStmt.close();
 		}

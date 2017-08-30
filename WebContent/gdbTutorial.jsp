@@ -4,7 +4,7 @@
 <head>
 <%@include file="./WEB-INF/includes/includes.jsp" %>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-<title>Tigress</title>
+<title>RevEngE</title>
 
 </head>
 
@@ -214,12 +214,18 @@
         <p>
         We can now either change the instruction itself or change the value of rax, which the instruction uses.  To do the latter, set rax to 1 less than the cmp value and run:
         </p>
-        <p>
+        <p class="code">
         set $rax = 0x535d6478
         continue
         </p>
         <p>
-        The program completes without any seg fault, so we have cracked it!  However, we may want to disable the timecheck altogether in the binary so that it may be run anywhere.  However, this requires tools beyond GDB what GDB provides, as GDB is simply a debugger that can alter the program during execution.  Static changes to the program require different tools entirely.
+        The program completes without any seg fault, so we have cracked it!  However, we may want to disable the timecheck altogether in the binary so that it may be run anywhere.  We can do this with GDB!  First, start the program in GDB with the write option:
+        </p>
+        <p class="code">
+        gdb -write -q a.out
+        </p>
+        <p>
+        Now, follow the steps above.  After changing $rax, quit.  Then try running the program.  If all went well, it should run fine now!
         </p>
         </tr>
         </table>
