@@ -24,7 +24,6 @@
         <table class="inner_content_table">
         <tr>
         <td>
-        <form action="addStudentsSubmit.jsp" method="post">
         <table class="news_table">
         <tr class="title_general">
         <td align="center">
@@ -84,7 +83,6 @@
         </td>
         </tr>
         </table>
-        </form>
         </td>
         </tr>
         </table>
