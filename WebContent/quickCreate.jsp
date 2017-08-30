@@ -91,7 +91,7 @@
         Open
         </td>
         <td width="90%">
-        <input form="updateForm" style="width:100%" type="datetime-local" placeholder="mm-dd-yyyy hh:mm:ss" name="open_time"></input>
+        <input form="updateForm" style="width:100%" type="datetime-local" placeholder="yyyy-mm-dd hh:mm:ss" name="open_time"></input>
         </td>
         </tr>
         <tr>
@@ -99,7 +99,7 @@
         Close
         </td>
         <td width="90%">
-        <input form="updateForm" style="width:100%" type="datetime-local" placeholder="mm-dd-yyyy hh:mm:ss" name="end_time"></input>
+        <input form="updateForm" style="width:100%" type="datetime-local" placeholder="yyyy-mm-dd hh:mm:ss" name="end_time"></input>
         </td>
         </tr>
         <tr>

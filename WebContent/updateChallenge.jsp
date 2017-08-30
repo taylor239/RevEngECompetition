@@ -177,12 +177,12 @@
 	        		fastLookupMap.put(curObj.getAttribute("email"), false);
 	        	}
 	        	String curAssign = request.getParameter("assign_" + curObj.getAttribute("email"));
-	        	if(curAssign == null && ((boolean)fastLookupMap.get(curObj.getAttribute("email"))) == true)
+	        	if(curAssign == null && ((Boolean)fastLookupMap.get(curObj.getAttribute("email"))) == true)
 	        	{
 	        		//System.out.println("is unchecked but was checked");
 	        		myConnector.unassignChallenge(challengeName, (String)curObj.getAttribute("email"));
 	        	}
-	        	else if(curAssign != null && ((boolean)fastLookupMap.get(curObj.getAttribute("email"))) == false)
+	        	else if(curAssign != null && ((Boolean)fastLookupMap.get(curObj.getAttribute("email"))) == false)
 	        	{
 	        		//System.out.println("is checked but was unchecked");
 	        		myConnector.assignChallenge(challengeName, (String)curObj.getAttribute("email"));
