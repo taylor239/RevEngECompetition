@@ -92,6 +92,22 @@ public class DownloadAllSubmissions extends HttpServlet
 			
 			DBObj submission = (DBObj) myChallengesFull.get(x);
 			
+			//System.out.println(submission.getAttributes());
+			
+			if((Boolean)submission.getAttribute("auto_grade"))
+			{
+				ZipEntry autoGrade = new ZipEntry("auto_grades.txt");
+				nestedZipOut.putNextEntry(autoGrade);
+				byte[] autoGradeData = null;
+				String gradeOutput = "";
+				gradeOutput += "Validation Tests Passed:\n" + submission.getAttribute("auto_grade_score") + "\n";
+				gradeOutput += "Total Validation Tests:\n" + submission.getAttribute("num_grading_iterations");
+				autoGradeData = gradeOutput.getBytes();
+				
+				nestedZipOut.write(autoGradeData);
+				nestedZipOut.closeEntry();
+			}
+			
 			ZipEntry originalFile = new ZipEntry("original.c");
 			nestedZipOut.putNextEntry(originalFile);
 			byte[] originalOut = null;

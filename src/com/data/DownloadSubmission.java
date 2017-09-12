@@ -83,27 +83,74 @@ public class DownloadSubmission extends HttpServlet {
 		
 		ZipOutputStream zipOut = new ZipOutputStream(out);
 		
+		if((Boolean)submission.getAttribute("auto_grade"))
+		{
+			ZipEntry autoGrade = new ZipEntry("auto_grades.txt");
+			zipOut.putNextEntry(autoGrade);
+			byte[] autoGradeData = null;
+			String gradeOutput = "";
+			gradeOutput += "Validation Tests Passed:\n" + submission.getAttribute("auto_grade_score") + "\n";
+			gradeOutput += "Total Validation Tests:\n" + submission.getAttribute("num_grading_iterations");
+			autoGradeData = gradeOutput.getBytes();
+			
+			zipOut.write(autoGradeData);
+			zipOut.closeEntry();
+		}
+		
 		ZipEntry originalFile = new ZipEntry("original.c");
 		zipOut.putNextEntry(originalFile);
-		byte[] originalOut=(byte[])submission.getAttribute("originalFile");
+		byte[] originalOut=null;
+		if(submission.getAttribute("originalFile") == null || submission.getAttribute("originalFile") instanceof String)
+		{
+			originalOut = new byte[0];
+		}
+		else
+		{
+			originalOut = (byte[])submission.getAttribute("originalFile");
+		}
+		//(byte[])submission.getAttribute("originalFile");
 		zipOut.write(originalOut);
 		zipOut.closeEntry();
 		
 		ZipEntry obfuscatedFile = new ZipEntry("obfuscated");
 		zipOut.putNextEntry(obfuscatedFile);
-		byte[] obfuscatedOut=(byte[])submission.getAttribute("obfuscatedFile");
+		byte[] obfuscatedOut=null;//(byte[])submission.getAttribute("obfuscatedFile");
+		if(submission.getAttribute("obfuscatedFile") == null || submission.getAttribute("obfuscatedFile") instanceof String)
+		{
+			obfuscatedOut = new byte[0];
+		}
+		else
+		{
+			obfuscatedOut = (byte[])submission.getAttribute("obfuscatedFile");
+		}
 		zipOut.write(obfuscatedOut);
 		zipOut.closeEntry();
 		
 		ZipEntry answerFile = new ZipEntry("answer");
 		zipOut.putNextEntry(answerFile);
-		byte[] answerOut=(byte[])submission.getAttribute("submittedFile");
+		byte[] answerOut=null;//(byte[])submission.getAttribute("submittedFile");
+		if(submission.getAttribute("submittedFile") == null || submission.getAttribute("submittedFile") instanceof String)
+		{
+			answerOut = new byte[0];
+		}
+		else
+		{
+			answerOut = (byte[])submission.getAttribute("submittedFile");
+		}
 		zipOut.write(answerOut);
 		zipOut.closeEntry();
 		
 		ZipEntry writeupFile = new ZipEntry("writeup.txt");
 		zipOut.putNextEntry(writeupFile);
-		byte[] writeupOut=(byte[])submission.getAttribute("submittedWrittenFile");
+		byte[] writeupOut=null;//(byte[])submission.getAttribute("submittedWrittenFile");
+		if(submission.getAttribute("submittedWrittenFile") == null || submission.getAttribute("submittedWrittenFile") instanceof String)
+		{
+			writeupOut = new byte[0];
+		}
+		else
+		{
+			writeupOut = (byte[])submission.getAttribute("submittedWrittenFile");
+		}
 		zipOut.write(writeupOut);
 		zipOut.closeEntry();
 		

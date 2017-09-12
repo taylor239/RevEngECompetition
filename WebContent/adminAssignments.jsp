@@ -49,7 +49,7 @@
     </tr>
     -->
 	<tr>
-    	<td width="25%">
+    	<td width="15%">
     	<!--
         <table class="inner_content_table">
         <tr>
@@ -93,7 +93,7 @@
         </table>
         </td>
         -->
-        <td width="50%">
+        <td width="70%">
         <table class="inner_content_table">
         <!--
         <tr>
@@ -171,10 +171,13 @@
         translationMap.put("open_time", "Open");
         translationMap.put("end_time", "Close");
         translationMap.put("grade", "Grade");
+        translationMap.put("num_grading_iterations", "Number of Tests");
+        translationMap.put("auto_grade", "Auto Validation");
+        boolean graded = (Boolean)(((DBObj)myChallenges.get(0)).getAttribute("auto_grade"));
         for(int x=0; x<keys.size(); x++)
         {
         	String tmp=(String)keys.get(x);
-        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type"))
+        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || (tmp.equals("num_grading_iterations")))
         	{
         		keys.remove(x);
         		x--;
@@ -270,10 +273,13 @@
             translationMap.put("open_time", "Open");
             translationMap.put("end_time", "Close");
             translationMap.put("grade", "Grade");
+            translationMap.put("num_grading_iterations", "Number of Tests");
+            translationMap.put("auto_grade", "Auto Validation");
+            boolean graded = (Boolean)(((DBObj)myChallenges.get(0)).getAttribute("auto_grade"));
             for(int x=0; x<keys.size(); x++)
             {
             	String tmp=(String)keys.get(x);
-            	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || tmp.equals("admin_email"))
+            	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || tmp.equals("admin_email") || (tmp.equals("num_grading_iterations")))
             	{
             		keys.remove(x);
             		x--;
@@ -392,7 +398,7 @@
         </tr>
         </table>
         </td>
-        <td width="25%">
+        <td width="15%">
         <!--
         <table class="inner_content_table">
         <tr>

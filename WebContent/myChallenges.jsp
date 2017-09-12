@@ -49,7 +49,7 @@
     </tr>
     -->
 	<tr>
-    	<td width="20%">
+    	<td width="15%">
     	<!--
         <table class="inner_content_table">
         <tr>
@@ -93,7 +93,7 @@
         </table>
         </td>
         -->
-        <td width="60%">
+        <td width="70%">
         <table class="inner_content_table">
         <!--
         <tr>
@@ -170,10 +170,14 @@
         translationMap.put("open_time", "Open");
         translationMap.put("end_time", "Close");
         translationMap.put("grade", "Grade");
+        translationMap.put("num_grading_iterations", "Total Tests");
+        translationMap.put("auto_grade_score", "Tests Passed");
+        boolean graded = (Boolean)(((DBObj)myChallenges.get(0)).getAttribute("auto_grade"));
+        graded = false;
         for(int x=0; x<keys.size(); x++)
         {
         	String tmp=(String)keys.get(x);
-        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || tmp.equals("grade") || tmp.equals("admin_email") || tmp.equals("gradingFile"))
+        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || tmp.equals("grade") || tmp.equals("admin_email") || tmp.equals("gradingFile") || tmp.equals("auto_grade") || (!graded && tmp.equals("num_grading_iterations")) || (!graded && tmp.equals("auto_grade_score")))
         	{
         		keys.remove(x);
         		x--;
@@ -245,12 +249,15 @@
 	        		<script>
 	        		<%
 	        		String lastSubmission = "";
+	        		boolean isGraded = (Boolean)(((DBObj)myChallenges.get(x)).getAttribute("auto_grade"));
 	        		if(((DBObj)myChallenges.get(x)).getAttribute("submissionTime")!=null)
 	        		{
 	        			lastSubmission = "You submitted last on: " + ((DBObj)myChallenges.get(x)).getAttribute("submissionTime");
 	        		}
+	        		String totalTests = "" + ((DBObj)myChallenges.get(x)).getAttribute("num_grading_iterations");
+	        		String passedTests = "" + ((DBObj)myChallenges.get(x)).getAttribute("auto_grade_score");
 	        		%>
-	        		var message_<%=x %> = '<table width="100%"><tr width="100%"><td width="100%" style="vertical-align:bottom;">Assignment Instructions:</td></tr><tr><td style=\"vertical-align:top;\"><table style=\"width:100%;\"><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\"><%=((DBObj)myChallenges.get(x)).getAttribute("description") %></td></tr><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\"><%=lastSubmission %></td></tr></table></td></tr></table>';
+	        		var message_<%=x %> = '<table width="100%"><tr width="100%"><td width="100%" style="vertical-align:bottom;">Assignment Instructions:</td></tr><tr><td style=\"vertical-align:top;\"><table style=\"width:100%;\"><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\"><%=((DBObj)myChallenges.get(x)).getAttribute("description") %></td></tr><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\"><%=lastSubmission %></td></tr><% if(isGraded){ %><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\">Validation Tests Run: <%=totalTests %></tr></td><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\">Validation Tests Passed: <%=passedTests %></tr></td><% } %></table></td></tr></table>';
 	        		</script>
 	        		<a onclick="showMessageBox(message_<%=x %>)">
 	        		<%
@@ -317,10 +324,14 @@
             translationMap.put("open_time", "Open");
             translationMap.put("end_time", "Close");
             translationMap.put("grade", "Grade");
+            translationMap.put("num_grading_iterations", "Total Tests");
+            translationMap.put("auto_grade_score", "Tests Passed");
+            boolean graded = (Boolean)(((DBObj)myChallenges.get(0)).getAttribute("auto_grade"));
+            graded = false;
             for(int x=0; x<keys.size(); x++)
             {
             	String tmp=(String)keys.get(x);
-            	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("gradingFile"))
+            	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("gradingFile") || tmp.equals("auto_grade") || (!graded && tmp.equals("num_grading_iterations")) || (!graded && tmp.equals("auto_grade_score")))
             	{
             		keys.remove(x);
             		x--;
@@ -417,7 +428,7 @@
         </tr>
         </table>
         </td>
-        <td width="20%">
+        <td width="15%">
         <!--
         <table class="inner_content_table">
         <tr>

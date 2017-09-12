@@ -13,7 +13,7 @@
 <table id="inner_content">
     
 	<tr>
-    	<td width="25%">
+    	<td width="15%">
         <table class="inner_content_table">
         
     	</table>
@@ -70,7 +70,7 @@
         }
         %>
         </td>
-        <td width="50%">
+        <td width="70%">
         <table class="inner_content_table">
         <tr>
         <td>
@@ -81,6 +81,7 @@
         <td colspan="3" align="center">
         <%
         DBObj challengeHead = (DBObj)myChallengesFull.get(0);
+        boolean autoGraded = (Boolean)challengeHead.getAttribute("auto_grade");
         %>
         Submissions for <%=challengeHead.getAttribute("challenge_name") %>
         </td>
@@ -94,45 +95,67 @@
         </div>
     	</td>
     	</tr>
+    	<%
+    	double numCols = 5;
+        if(autoGraded)
+        {
+        	numCols++;
+        }
+        double colWidth = 100/numCols;
+    	%>
         <tr colspan="2" width="100%">
         <td>
         <table class="news_item_table" width="100%" id="challengeTable">
         <tr>
-        <td width="25%">
+        <td width="<%=colWidth %>%">
         <div align="center">
         <b>
         Student
         </b>
         </div>
         </td>
-        <td width="25%">
+        <td width="<%=colWidth %>%">
         <div align="center">
         <b>
         Code Generated
         </b>
         </div>
         </td>
-        <td width="25%">
+        <td width="<%=colWidth %>%">
         <div align="center">
         <b>
         Last Submission
         </b>
         </div>
         </td>
-        <td width="25%">
+        <td width="<%=colWidth %>%">
         <div align="center">
         <b>
         Download
         </b>
         </div>
         </td>
-        <td width="25%">
+        <td width="<%=colWidth %>%">
         <div align="center">
         <b>
         Late
         </b>
         </div>
         </td>
+        <%
+        if(autoGraded)
+        {
+        %>
+        <td width="<%=colWidth %>%">
+        <div align="center">
+        <b>
+        Validation Tests
+        </b>
+        </div>
+        </td>
+        <%
+        }
+        %>
         <!--
         <td width="16%">
         <div align="center">
@@ -231,6 +254,18 @@
 	        	%>
 	        	</div>
 	        	</td>
+	        	<%
+	        	if(autoGraded)
+	        	{
+	        	%>
+	        	<td style="vertical-align:middle">
+	        	<div align="center">
+	        	<%=curObj.getAttribute("auto_grade_score") %>/<%=curObj.getAttribute("num_grading_iterations") %>
+	        	</div>
+	        	</td>
+	        	<%
+	        	}
+	        	%>
 	        	<!--
 	        	<td style="vertical-align:middle">
 	        	<div align="center">
@@ -291,7 +326,7 @@
         </tr>
         </table>
         </td>
-        <td width="25%">
+        <td width="15%">
         
         </td>
     </tr>

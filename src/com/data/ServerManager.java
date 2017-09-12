@@ -135,7 +135,7 @@ public class ServerManager
 		}
 		Runtime runtime=Runtime.getRuntime();
 		//Process restart=rt.exec("C:/xampp/tomcat/catalina_restart.bat");
-		System.out.println("Running "+command);
+		//System.out.println("Running "+command);
 		Process stopprocess=runtime.exec(command);
 		BufferedReader stopprocessinput=new BufferedReader(new InputStreamReader(stopprocess.getInputStream()));
 		String line=null;
@@ -143,12 +143,12 @@ public class ServerManager
 		{
 			myReturn+='\n';
 			myReturn+=line;
-			System.out.println(line);
+			//System.out.println(line);
 		}
 		int exitVal=stopprocess.waitFor();
-		System.out.println("Exited with error code "+exitVal);
-		myReturn+='\n';
-		myReturn+="Exited with error code "+exitVal;
+		//System.out.println("Exited with error code "+exitVal);
+		//myReturn+='\n';
+		//myReturn+="Exited with error code "+exitVal;
 		return myReturn;
 	}
 	/**
@@ -166,7 +166,7 @@ public class ServerManager
 		}
 		Runtime runtime=Runtime.getRuntime();
 		//Process restart=rt.exec("C:/xampp/tomcat/catalina_restart.bat");
-		System.out.println("Running "+command);
+		//System.out.println("Running "+command);
 		Process stopprocess=runtime.exec(command, null, dir);
 		BufferedReader stopprocessinput=new BufferedReader(new InputStreamReader(stopprocess.getInputStream()));
 		String line=null;
@@ -174,12 +174,12 @@ public class ServerManager
 		{
 			myReturn+='\n';
 			myReturn+=line;
-			System.out.println(line);
+			//System.out.println(line);
 		}
 		int exitVal=stopprocess.waitFor();
-		System.out.println("Exited with error code "+exitVal);
-		myReturn+='\n';
-		myReturn+="Exited with error code "+exitVal;
+		//System.out.println("Exited with error code "+exitVal);
+		//myReturn+='\n';
+		//myReturn+="Exited with error code "+exitVal;
 		return myReturn;
 	}
 	
@@ -199,8 +199,8 @@ public class ServerManager
 		Runtime runtime=Runtime.getRuntime();
 		//Process restart=rt.exec("C:/xampp/tomcat/catalina_restart.bat");
 		//System.out.println("Environment "+environmentalVars);
-		System.out.println("In "+dir.getAbsolutePath());
-		System.out.println("Running "+command);
+		//System.out.println("In "+dir.getAbsolutePath());
+		//System.out.println("Running "+command);
 		Process stopprocess=runtime.exec(command, environmentalVars, dir);
 		BufferedReader stopprocessinput=new BufferedReader(new InputStreamReader(stopprocess.getInputStream()));
 		String line=null;
@@ -212,8 +212,8 @@ public class ServerManager
 		}
 		int exitVal=stopprocess.waitFor();
 		//System.out.println("Exited with error code "+exitVal);
-		myReturn+='\n';
-		myReturn+="Exited with error code "+exitVal;
+		//myReturn+='\n';
+		//myReturn+="Exited with error code "+exitVal;
 		return myReturn;
 	}
 	
@@ -236,10 +236,10 @@ public class ServerManager
 		{
 			//System.out.println("Environment "+environmentalVars[x]);
 		}
-		System.out.println("In "+dir.getAbsolutePath());
+		//System.out.println("In "+dir.getAbsolutePath());
 		for(int x=0; x<command.length; x++)
 		{
-			System.out.println("Command "+command[x]);
+			//System.out.println("Command "+command[x]);
 		}
 		Process stopprocess=runtime.exec(command, environmentalVars, dir);
 		BufferedReader stopprocessinput=new BufferedReader(new InputStreamReader(stopprocess.getInputStream()));
@@ -259,9 +259,9 @@ public class ServerManager
 		}
 		int exitVal=stopprocess.waitFor();
 		//System.out.println("Exited with error code "+exitVal);
-		myReturn+='\n';
-		myReturn+="Exited with error code "+exitVal;
-		System.out.println(myReturn);
+		//myReturn+='\n';
+		//myReturn+="Exited with error code "+exitVal;
+		//System.out.println(myReturn);
 		return myReturn;
 	}
 }
