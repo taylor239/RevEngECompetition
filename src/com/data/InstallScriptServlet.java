@@ -77,7 +77,7 @@ public class InstallScriptServlet extends HttpServlet {
 		+ "\r\nsudo apt-get -y install default-jre" 
 		+ "\r\nsudo apt-get -y install tomcat8" 
 		+ "\r\n"
-		+ "\r\nwget http://localhost:8080/DataCollectorServer/endpointSoftware/CybercraftDataCollectionConnector.war -O /usr/share/tomcat8-root/CybercraftDataCollectionConnector.war"
+		+ "\r\nwget http://" + request.getServerName() + ":" + request.getServerPort() + "/DataCollectorServer/endpointSoftware/CybercraftDataCollectionConnector.war -O /var/lib/tomcat8/webapps/CybercraftDataCollectionConnector.war"
 		+ "\r\n"
 		+ "\r\n# Copy jar to install dir" 
 		+ "\r\n" 
