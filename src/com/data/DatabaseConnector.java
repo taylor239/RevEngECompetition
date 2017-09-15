@@ -1695,7 +1695,7 @@ public class DatabaseConnector
 	 */
 	public synchronized void challengeParticipantCodeWritten(String challengeName, String email, byte[] originalFile, byte[] gradingFile, byte[] obfuscatedFile)
 	{
-		String stmt="UPDATE `challenge_participant` SET `code_generated` = '1', `originalFile` = ?,  `gradingFile` = ?, `obfuscatedFile` = ? WHERE `challenge_participant`.`challenge_name` = ? AND `challenge_participant`.`email` = ?";
+		String stmt="UPDATE `challenge_participant` SET `code_generated` = '1', `originalFile` = ?,  `gradingFile` = ?, `obfuscatedFile` = ?, `codeGeneratedTime` = CURRENT_TIMESTAMP WHERE `challenge_participant`.`challenge_name` = ? AND `challenge_participant`.`email` = ?";
 		try
 		{
 			getConnection();

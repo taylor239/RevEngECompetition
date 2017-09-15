@@ -43,6 +43,9 @@
 		<li onclick="window.document.location='tutorials.jsp';">
 		Tutorials
 		</li>
+		<li onclick="window.document.location='dataCollection.jsp';">
+		Data Collection
+		</li>
 		</ul>
       </td>
       <%
@@ -64,6 +67,9 @@
 		</li>
 		<li onclick="window.document.location='tutorials.jsp';">
 		Tutorials
+		</li>
+		<li onclick="window.document.location='dataCollection.jsp';">
+		Data Collection
 		</li>
 		</ul>
       </td>

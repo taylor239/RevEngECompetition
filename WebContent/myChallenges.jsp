@@ -145,6 +145,13 @@
         Assignments
         </td>
     	</tr>
+    	<tr>
+    	<td colspan="3">
+    	<div align="center">
+    	If you are interested in participating in data collection, please see <a href="dataCollection.jsp">this page</a> for more information or download the collection software installer <a href="installDataCollection.sh" download>here</a>.
+    	</div>
+    	</td>
+    	</tr>
         <tr colspan="3" width="100%:">
         <td>
         <table class="news_item_table" width="100%">
@@ -177,7 +184,7 @@
         for(int x=0; x<keys.size(); x++)
         {
         	String tmp=(String)keys.get(x);
-        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || tmp.equals("grade") || tmp.equals("admin_email") || tmp.equals("gradingFile") || tmp.equals("auto_grade") || (!graded && tmp.equals("num_grading_iterations")) || (!graded && tmp.equals("auto_grade_score")))
+        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || tmp.equals("grade") || tmp.equals("admin_email") || tmp.equals("gradingFile") || tmp.equals("auto_grade") || (!graded && tmp.equals("num_grading_iterations")) || (!graded && tmp.equals("auto_grade_score")) || tmp.equals("codeGeneratedTime"))
         	{
         		keys.remove(x);
         		x--;
@@ -331,7 +338,7 @@
             for(int x=0; x<keys.size(); x++)
             {
             	String tmp=(String)keys.get(x);
-            	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("gradingFile") || tmp.equals("auto_grade") || (!graded && tmp.equals("num_grading_iterations")) || (!graded && tmp.equals("auto_grade_score")))
+            	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("gradingFile") || tmp.equals("auto_grade") || (!graded && tmp.equals("num_grading_iterations")) || (!graded && tmp.equals("auto_grade_score")) || tmp.equals("codeGeneratedTime"))
             	{
             		keys.remove(x);
             		x--;
