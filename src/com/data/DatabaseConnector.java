@@ -1218,6 +1218,25 @@ public class DatabaseConnector
 		disconnect();
 	}
 	
+	public User dataCollectEnable(String email)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("UPDATE `user` SET `downloadedDataCollection` = '1' WHERE `user`.`email` = ?");
+			myStmt.setString(1, email);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return getUser(email);
+		}
+		disconnect();
+		return getUser(email);
+	}
+	
 	public boolean updateChallenge(String prevName, String newName, String openTime, String endTime, String description)
 	{
 		getConnection();

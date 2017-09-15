@@ -49,7 +49,7 @@
     </tr>
     -->
 	<tr>
-    	<td width="15%">
+    	<td width="10%">
     	<!--
         <table class="inner_content_table">
         <tr>
@@ -93,7 +93,7 @@
         </table>
         </td>
         -->
-        <td width="70%">
+        <td width="80%">
         <table class="inner_content_table">
         <!--
         <tr>
@@ -195,7 +195,7 @@
         for(int x=0; x<keys.size(); x++)
         {
         %>
-        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
         <div align="center">
         <b>
         <%
@@ -214,17 +214,20 @@
         <%
         }
         %>
-        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
-        <b>Code</b>
+        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
+        <div align="center"><b>Code</b></div>
         </td>
-        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
-        <b>Write-Up</b>
+        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
+        <div align="center"><b>Write-Up</b></div>
         </td>
-        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
-        <b>Answer</b>
+        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
+        <div align="center"><b>Answer</b></div>
         </td>
-        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
-        <b>Submit</b>
+        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
+        <div align="center"><b>Submit</b></div>
+        </td>
+        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
+        <div align="center"><b>Upload Data</b></div>
         </td>
         </tr>
         <%
@@ -241,7 +244,7 @@
 	        for(int y=0; y<keys.size(); y++)
 	        {
 	        %>
-	        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+	        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
 	        <div align="left">
 	        <%
 	        	if(keys.get(y).equals("open_time") || keys.get(y).equals("end_time"))
@@ -283,7 +286,7 @@
 	        <%
 	        }
 	        %>
-	        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+	        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
 	        <%
 	        if((Integer)((DBObj)myChallenges.get(x)).getAttribute("code_generated") == 0)
 	        {
@@ -303,15 +306,26 @@
 	        }
 	        %>
 	        </td>
-	        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+	        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
 	        <input style="width:100% !important;" form="uploadForm_<%=x %>" type="file" name="writeFile" size="50" />
 	        </td>
-	        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+	        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
 	        <input style="width:100% !important;" form="uploadForm_<%=x %>" type="file" name="codeFile" size="50" />
 	        </td>
-	        <td width="<% out.print(100/((double)keys.size() + 4)); %>%">
+	        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
 	        <input form="uploadForm_<%=x %>" type="hidden" name="challengeName" value="<%= ((DBObj)myChallenges.get(0)).getAttribute("challenge_name") %>" />
             <input form="uploadForm_<%=x %>" type="submit" value="Submit" />
+	        </td>
+	        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
+	        <%
+	        System.out.println(myUser.getAttributeNames());
+	        if((boolean)myUser.getAttribute("downloadedDataCollection"))
+	        {
+	        %>
+	        <input form="uploadForm_<%=x %>" type="checkbox" name="uploadData" value="true" /> Upload
+	        <%
+	        }
+	        %>
 	        </td>
         </tr>
         <%
@@ -435,7 +449,7 @@
         </tr>
         </table>
         </td>
-        <td width="15%">
+        <td width="10%">
         <!--
         <table class="inner_content_table">
         <tr>

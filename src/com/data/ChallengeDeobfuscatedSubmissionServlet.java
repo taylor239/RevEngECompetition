@@ -67,6 +67,17 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 		
 		
 		String challengeName = (request.getParameter("challengeName"));
+		
+		String uploadData = "no";
+		if(request.getParameterMap().containsKey("uploadData"))
+		{
+			uploadData = request.getParameter("uploadData");
+		}
+		
+		boolean uploadDataBool = !uploadData.equals("no");
+		
+		System.out.println(uploadData);
+		
 		//if(ServletFileUpload.isMultipartContent(request))
 		HashMap dataMap = new HashMap();
 		{
@@ -327,7 +338,14 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 			}
 		}
 		
-		response.sendRedirect("viewChallenge.jsp?challengeName="+challengeName);
+		if(uploadDataBool)
+		{
+			response.sendRedirect("activateDataUpload.jsp");
+		}
+		else
+		{
+			response.sendRedirect("myChallenges.jsp");
+		}
 	}
 
 	/**

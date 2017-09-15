@@ -46,6 +46,9 @@
 		<li onclick="window.document.location='dataCollection.jsp';">
 		Data Collection
 		</li>
+		<li onclick="window.document.location='dataUploads.jsp';">
+		Data Uploads
+		</li>
 		</ul>
       </td>
       <%
@@ -70,6 +73,9 @@
 		</li>
 		<li onclick="window.document.location='dataCollection.jsp';">
 		Data Collection
+		</li>
+		<li class="greyed">
+		Data Uploads
 		</li>
 		</ul>
       </td>

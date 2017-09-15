@@ -22,7 +22,7 @@
         <table class="news_table">
         <tr class="title_general">
         <td align="center">
-        Tool Tutorials
+        Data Collection
         </td>
     	</tr>
         </table>
@@ -68,8 +68,9 @@
         <p>
         <ul>
         	<li><a href="https://www.usenix.org/system/files/conference/ase16/ase16-paper-taylor.pdf">A Tool for Teaching Reverse Engineering</a>, the document outlining the work here</li>
-        	<li>The consent form for students</li>
-        	<li>The University of Arizona approved IRB document for this research</li>
+        	<li>The <a href="Students.pdf">consent form for students</a></li>
+        	<li>The <a href="Professionals.pdf">consent document and information for professionals and everyone else</a></li>
+        	<li>The <a href="approval.pdf">University of Arizona IRB approval letter</a> for this project</li>
         </ul>
         </p>
         </td>
@@ -90,6 +91,18 @@
         <p>
         <ol>
         	<li><a href="tools.jsp">Download and setup the RevEngE virtual machine</a>.  Since the data collection software tends to be resource intensive, make sure you allocate at least 3 GB of memory and 2 processors to the virtual machine, otherwise you may experience significant performance problems.</li>
+        	<li>Download the <a href="installDataCollection.sh">install script from here</a>.  Run it with root privileges:</li>
+        	<p class="code">sudo ./installDataCollection.sh</p>
+        	<li>From now on, your virtual machine will collect data in the background.  If you run into significant performance problems, re-download the virtual machine and proceed without data collection.</li>
+        	<li>
+        	When you are ready to turn in your assignment/task, check the "Upload" checkbox under the "Upload Data" column.  When you submit with the box checked, your data will be uploaded automatically.
+        	</li>
+        	<li>
+        	Uploads are done in terms of "frames," which are loose time-segments of data.  You do not need to stay on the same webpage while uploading; the upload is being done in the background so it will only stop with an interruption like a restart.
+        	</li>
+        	<li>
+        	Keep track of your upload progress using the <a href="dataUploads.jsp">data uploads page</a>.
+        	</li>
         </ol>
         </p>
         </td>

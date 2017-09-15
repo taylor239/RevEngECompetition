@@ -44,6 +44,9 @@ public class InstallScriptServlet extends HttpServlet {
 		User myUser=(User)session.getAttribute("user");
 		String curEmail = (String) myUser.getAttribute("email");
 		
+		myUser = myConnector.dataCollectEnable((String)myUser.getAttribute("email"));
+		session.setAttribute("user", myUser);
+		
 		String output = "#!/bin/bash" 
 		+ "\r\nclear" 
 		+ "\r\n" 
