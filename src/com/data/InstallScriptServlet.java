@@ -87,7 +87,8 @@ public class InstallScriptServlet extends HttpServlet {
 		//+ "\nsudo apt-get -y install mysql-client" 
 		+ "\nservice mariadb start"
 		+ "\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/dataCollection.sql -O /opt/dataCollector/dataCollection.sql"
-		+ "\n mariadb -u root < /opt/dataCollector/dataCollection.sql"
+		+ "\nmariadb -u root < /opt/dataCollector/dataCollection.sql"
+		+ "\nmariadb -u root -e \"CREATE USER 'dataCollector'@'localhost' IDENTIFIED VIA mysql_native_password USING 'uBgiDDGhndviQeEZ';GRANT USAGE ON *.* TO 'dataCollector'@'localhost' REQUIRE NONE WITH MAX_QUERIES_PER_HOUR 0 MAX_CONNECTIONS_PER_HOUR 0 MAX_UPDATES_PER_HOUR 0 MAX_USER_CONNECTIONS 0;GRANT ALL PRIVILEGES ON `dataCollection`.* TO 'dataCollector'@'localhost';\""
 		+ "\n"
 		+ "\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/CybercraftDataCollectionConnector.war -O /var/lib/tomcat8/webapps/CybercraftDataCollectionConnector.war"
 		+ "\n"
@@ -119,6 +120,7 @@ public class InstallScriptServlet extends HttpServlet {
 		+ "\n" 
 		+ "\n# Launch script" 
 		+ "\n" 
+		+ "\nmkdir ~/.config/autostart/"
 		+ "\ntee ~/.config/autostart/DataCollector.desktop > /dev/null <<'EOF'" 
 		+ "\n[Desktop Entry]" 
 		+ "\nType=Application" 
@@ -132,6 +134,8 @@ public class InstallScriptServlet extends HttpServlet {
 		+ "\nComment=Collects data" 
 		+ "\nEOF" 
 		+ "\n" 
+		+ "\nservice tomcat8 start"
+		+ "\n"
 		+ "\n/opt/dataCollector/DataCollectorStart.sh & disown" ;
 		response.getWriter().append(output);
 	}
