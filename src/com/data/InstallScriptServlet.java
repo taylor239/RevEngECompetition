@@ -47,6 +47,11 @@ public class InstallScriptServlet extends HttpServlet {
 		myUser = myConnector.dataCollectEnable((String)myUser.getAttribute("email"));
 		session.setAttribute("user", myUser);
 		
+		String mySqlPassword = "for_revenge";
+		
+		String serverName = "revenge.cs.arizona.edu";
+		String port = "80";
+		
 		String output = "#!/bin/bash" 
 		+ "\r\nclear" 
 		+ "\r\n" 
@@ -76,14 +81,20 @@ public class InstallScriptServlet extends HttpServlet {
 		+ "\r\n" 
 		+ "\r\nsudo apt-get -y install default-jre" 
 		+ "\r\nsudo apt-get -y install tomcat8" 
+		+ "\r\nsudo debconf-set-selections <<< 'mysql-server mysql-server/root_password password " + mySqlPassword + "'" 
+		+ "\r\nsudo debconf-set-selections <<< 'mysql-server mysql-server/root_password_again password " + mySqlPassword + "'" 
+		+ "\r\nsudo apt-get -y install mysql-server" 
+		+ "\r\nsudo apt-get -y install mysql-client" 
+		+ "\r\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/dataCollection.sql -O /opt/dataCollector/dataCollection.sql"
+		+ "\r\n mysql -u root -p" + mySqlPassword + " < /opt/dataCollector/dataCollection.sql"
 		+ "\r\n"
-		+ "\r\nwget http://" + request.getServerName() + ":" + request.getServerPort() + "/DataCollectorServer/endpointSoftware/CybercraftDataCollectionConnector.war -O /var/lib/tomcat8/webapps/CybercraftDataCollectionConnector.war"
+		+ "\r\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/CybercraftDataCollectionConnector.war -O /var/lib/tomcat8/webapps/CybercraftDataCollectionConnector.war"
 		+ "\r\n"
 		+ "\r\n# Copy jar to install dir" 
 		+ "\r\n" 
 		+ "\r\nmkdir -p /opt/dataCollector/" 
 		+ "\r\n#mv ./DataCollector.jar /opt/dataCollector/" 
-		+ "\r\nwget http://" + request.getServerName() + ":" + request.getServerPort() + "/DataCollectorServer/endpointSoftware/DataCollector.jar -O /opt/dataCollector/DataCollector.jar" 
+		+ "\r\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/DataCollector.jar -O /opt/dataCollector/DataCollector.jar" 
 		+ "\r\nchmod +777 /opt/dataCollector/DataCollector.jar" 
 		+ "\r\nchmod +x /opt/dataCollector/DataCollector.jar" 
 		+ "\r\n" 
@@ -93,7 +104,7 @@ public class InstallScriptServlet extends HttpServlet {
 		+ "\r\nwhile true;" 
 		+ "\r\ndo" 
 		+ "\r\npkill -f \"/usr/bin/java -jar /opt/dataCollector/DataCollector.jar\"" 
-		+ "\r\n/usr/bin/java -Xmx1536m -jar /opt/dataCollector/DataCollector.jar -user " + curEmail + " -server " + request.getServerName() + ":" + request.getServerPort() + " >> /opt/dataCollector/log.log 2>&1" 
+		+ "\r\n/usr/bin/java -Xmx1536m -jar /opt/dataCollector/DataCollector.jar -user " + curEmail + " -server " + serverName + ":" + port + " >> /opt/dataCollector/log.log 2>&1" 
 		+ "\r\necho \"Got a crash: $(date)\" >> /opt/dataCollector/log.log" 
 		+ "\r\nsleep 2" 
 		+ "\r\ndone" 
