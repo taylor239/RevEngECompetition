@@ -127,7 +127,8 @@
 	{
 		if(verbose)
 		{
-			System.out.println("Signing in");
+			System.out.println("Signing in with ");
+			System.out.println(request.getParameter("email"));
 		}
 		myUser=myConnector.signIn(request.getParameter("email"), request.getParameter("password"), request.getRemoteAddr());
 	}
