@@ -41,7 +41,17 @@ public class InstallScriptServlet extends HttpServlet {
 			myConnector=new DatabaseConnector("pillar");
 			session.setAttribute("connector", myConnector);
 		}
+		
 		User myUser=(User)session.getAttribute("user");
+		
+		if(myUser == null)
+		{
+			String noUserOutput = "#!/bin/bash" 
+			+ "\necho \"You must be signed in on revenge.cs.arizona.edu when you download this script.\"";
+			response.getWriter().append(noUserOutput);
+			return;
+		}
+		
 		String curEmail = (String) myUser.getAttribute("email");
 		
 		myUser = myConnector.dataCollectEnable((String)myUser.getAttribute("email"));
@@ -85,12 +95,14 @@ public class InstallScriptServlet extends HttpServlet {
 		//+ "\nsudo debconf-set-selections <<< 'mysql-server mysql-server/root_password_again password " + mySqlPassword + "'" 
 		//+ "\nsudo apt-get -y install mysql-server" 
 		//+ "\nsudo apt-get -y install mysql-client" 
-		+ "\nservice mysql start"
-		+ "\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/dataCollection.sql -O /opt/dataCollector/dataCollection.sql"
-		+ "\nmariadb -u root < /opt/dataCollector/dataCollection.sql"
+		+ "\n\nservice mysql start"
+		+ "\n\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/dataCollection.sql -O /opt/dataCollector/dataCollection.sql"
+		+ "\n\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/dataCollection.sql -O /opt/dataCollector/dataCollection.sql"
+		+ "\n\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/dataCollection.sql -O /opt/dataCollector/dataCollection.sql"
+		+ "\n\nmariadb -u root < /opt/dataCollector/dataCollection.sql"
 		+ "\nmariadb -u root -e \"CREATE USER 'dataCollector'@'localhost' IDENTIFIED BY 'uBgiDDGhndviQeEZ';\""
 		+ "\nmariadb -u root -e \"GRANT USAGE ON *.* TO 'dataCollector'@'localhost' REQUIRE NONE WITH MAX_QUERIES_PER_HOUR 0 MAX_CONNECTIONS_PER_HOUR 0 MAX_UPDATES_PER_HOUR 0 MAX_USER_CONNECTIONS 0;\""
-		+ "\nmariadb -u root -e \"GRANT ALL PRIVILEGES ON `dataCollection`.* TO 'dataCollector'@'localhost';\""
+		+ "\nmariadb -u root -e \"GRANT ALL PRIVILEGES ON dataCollection.* TO 'dataCollector'@'localhost';\""
 		+ "\n"
 		+ "\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/CybercraftDataCollectionConnector.war -O /var/lib/tomcat8/webapps/CybercraftDataCollectionConnector.war"
 		+ "\n"
