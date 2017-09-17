@@ -39,6 +39,7 @@
 	if(replyMap.get("framesUploaded").equals(0) && replyMap.get("framesLeft").equals(0))
 	{
 		initializing = true;
+		active = "initializing";
 	}
 %>
 <%@include file="./WEB-INF/includes/mainPane.jsp" %>
