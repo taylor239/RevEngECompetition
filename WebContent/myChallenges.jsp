@@ -313,7 +313,7 @@
 	        <input style="width:100% !important;" form="uploadForm_<%=x %>" type="file" name="codeFile" size="50" />
 	        </td>
 	        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
-	        <input form="uploadForm_<%=x %>" type="hidden" name="challengeName" value="<%= ((DBObj)myChallenges.get(0)).getAttribute("challenge_name") %>" />
+	        <input form="uploadForm_<%=x %>" type="hidden" name="challengeName" value="<%= ((DBObj)myChallenges.get(x)).getAttribute("challenge_name") %>" />
             <input form="uploadForm_<%=x %>" type="submit" value="Submit" />
 	        </td>
 	        <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
