@@ -183,6 +183,12 @@ public class DatabaseConnectionPool implements Runnable
 	 */
 	public void returnConnection(Connection toReturn)
 	{
+		try {
+			toReturn.close();
+		} catch (SQLException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
 		if(true)
 		{
 			return;

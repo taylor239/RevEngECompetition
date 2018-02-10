@@ -3,6 +3,7 @@ package com.data;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintWriter;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
@@ -107,6 +108,16 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 		
 		ArrayList curChallenge = myConnector.getChallenge(challengeName, (String)myUser.getAttribute("email"));
 		//System.out.println(((DBObj)curChallenge.get(0)).getAttributes());
+		myConnector.removeChallengeParticipantTests(challengeName, (String)myUser.getAttribute("email"));
+		
+		//Send redirect here, because grading takes a while.
+		PrintWriter redirectWriter = response.getWriter();
+		
+		request.getRequestDispatcher("./gradeWaiting.jsp").include(request, response);
+		
+		redirectWriter.flush();
+		response.flushBuffer();
+		
 		if((boolean) ((DBObj)curChallenge.get(0)).getAttribute("auto_grade"))
 		{
 			ArrayList gradeChallenge = myConnector.getChallengeAutoGrade(challengeName);
@@ -194,23 +205,216 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
 	        	System.out.println(nativeOutput);
 	        	
-	        	int numArgs = gradeChallenge.size();
-	        	System.out.println("Testing with " + numArgs + " args.");
 	        	
-	        	String[] runCmdArray = new String[numArgs + 6];
+	        	DBObj previousMap = (DBObj) gradeChallenge.get(0);
+	        	ArrayList testArgs = new ArrayList();
+	        	testArgs.add(previousMap);
+	        	for(int x=1; x<=gradeChallenge.size(); x++)
+	        	{
+	        		DBObj curMap = null;
+	        		if(x < gradeChallenge.size())
+	        		{
+	        			curMap = (DBObj) gradeChallenge.get(x);
+	        		}
+	        		//System.out.println(previousMap.attributes);
+	        		//System.out.println(curMap.attributes);
+	        		if(curMap != null && curMap.getAttribute("test_number").equals(previousMap.getAttribute("test_number")))
+	        		{
+	        			testArgs.add(curMap);
+	        		}
+	        		else
+	        		{
+	        			ArrayList outputInput = myConnector.getChallengeAutoGradeInput((String)previousMap.getAttribute("challenge_name"), (int)previousMap.getAttribute("test_number"));
+	        			int numIterations = (int)previousMap.getAttribute("num_iterations");
+	        			int numFailures = 0;
+	        			redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Testing " + numIterations + " values." + " <br />\";</script>");
+	        			redirectWriter.flush();
+	    	    		response.flushBuffer();
+	        			myConnector.gradeChallengeParticipant(challengeName, (String)myUser.getAttribute("email"), (int)previousMap.getAttribute("test_number"), 0, false, false, true);
+	        			for(int y=0; y<numIterations; y++)
+	        			{
+	        				// Test here
+	        				int numArgs = testArgs.size();
+    	    	        	System.out.println("Testing with " + numArgs + " args.");
+    	    	        	
+    	    	        	String[] runCmdArray = new String[numArgs + 6];
+    	    	        	
+    	    	        	runCmdArray[0] = "firejail";
+    	    	        	runCmdArray[1] = "--quiet";
+    	    	        	//runCmdArray[2] = "--whitelist="+genDir+"/submitted.out";
+    	    	        	//runCmdArray[3] = "--read-write="+genDir+"/submitted.out";
+    	    	        	runCmdArray[2] = "--noprofile";
+    	    	        	//runCmdArray[3] = "--private";//=" + sc.getRealPath("/WEB-INF/");
+    	    	        	//runCmdArray[4] = "--whitelist="+genDir+"/submitted.out";
+    	    	        	runCmdArray[4] = "--overlay";
+    	    	        	runCmdArray[3] = "--net=none";
+    	    	        	//runCmdArray[3] = "--blacklist=/";
+    	    	        	//runCmdArray[2] = "--noblacklist="+genDir+"/submitted.out";
+	        				for(int z=0; z<testArgs.size(); z++)
+	        				{
+	        					DBObj gradeObj = (DBObj) testArgs.get(z);
+	        					//System.out.println(gradeObj.attributes);
+	        					String value = (String) gradeObj.getAttribute("arg_value");
+	    	        			if(value == null || value.isEmpty())
+	    	        			{
+	    	        				String type = (String) gradeObj.getAttribute("arg_type");
+	    	        				if(type.equals("long"))
+	    	        				{
+	    	        					Random tmpRand = new SecureRandom();
+	    	        					long tmpLong = tmpRand.nextLong();
+	    	        					while(tmpLong > Math.pow(10, x + 1) || -tmpLong > Math.pow(10, x + 1))
+	    	        					{
+	    	        						tmpLong = tmpLong/2;
+	    	        					}
+	    	        					value = ((Long)tmpLong).toString();
+	    	        				}
+	    	        				if(type.equals("integer"))
+	    	        				{
+	    	        					Random tmpRand = new SecureRandom();
+	    	        					int tmpInt = tmpRand.nextInt();
+	    	        					while(tmpInt > Math.pow(10, x + 1) || -tmpInt > Math.pow(10, x + 1))
+	    	        					{
+	    	        						tmpInt = tmpInt/2;
+	    	        					}
+	    	        					value = ((Integer)tmpInt).toString();
+	    	        				}
+	    	        			}
+	    	        			runCmdArray[6+z] = value;
+	        				}
+	        				runCmdArray[5] = genDir+"/grading.out";
+	    	        		
+	    	        		String argString = "Running grading with: ";
+	    	        		for(int z=0; z<runCmdArray.length; z++)
+	    	        		{
+	    	        			argString += "" + z + ":" + runCmdArray[z] + " ";
+	    	        		}
+	    	        		
+	    	        		System.out.println(argString);
+	    	        		//System.out.println(tmpFile);
+	    	        		//System.out.println(environmentalVars);
+	    	        		
+	    	        		
+	    	        		ArrayList outputForce = new ArrayList();
+	    	        		for(int z=0; z<outputInput.size(); z++)
+	    	        		{
+	    	        			outputForce.add(((DBObj)outputInput.get(z)).getAttribute("input_string"));
+	    	        		}
+	    	        		
+	    	        		String gradingOutput = nativeInterface.executeCommand(runCmdArray, tmpFile, environmentalVars, 500000000, outputForce);
+	    	        		
+	    	        		runCmdArray[5] = genDir+"/submitted.out";
+	    	        		String submittedOutput = nativeInterface.executeCommand(runCmdArray, tmpFile, environmentalVars, 500000000, outputForce);
+	    	        		
+	    	        		//System.out.println(gradingOutput);
+	    	        		
+	    	        		Scanner tmpScanner = new Scanner(gradingOutput);
+	    	        		if(tmpScanner.hasNextLine())
+	    	        		{
+	    	        			//tmpScanner.nextLine();
+	    	        			//tmpScanner.nextLine();
+	    	        			String finalGraded = "";
+	    	        			while(tmpScanner.hasNextLine())
+	    	        			{
+	    	        				//String tmpString = tmpScanner.nextLine();
+	    	        				//if(tmpScanner.hasNextLine())
+	    	        				//{
+	    	        				//	if(finalGraded.equals(""))
+	    	        				//	{
+	    	        				//		finalGraded += tmpString;
+	    	        				//	}
+	    	        				//	else
+	    	        				//	{
+	    	        				//		finalGraded += "\n" + tmpString;
+	    	        				//	}
+	    	        				//}
+	    	        				finalGraded += "\n" + tmpScanner.nextLine();
+	    	        			}
+	    	        			gradingOutput = finalGraded;
+	    	        		}
+	    	        		
+	    	        		tmpScanner = new Scanner(submittedOutput);
+	    	        		if(tmpScanner.hasNextLine())
+	    	        		{
+	    	        			//tmpScanner.nextLine();
+	    	        			//tmpScanner.nextLine();
+	    	        			String finalSubmitted = "";
+	    	        			while(tmpScanner.hasNextLine())
+	    	        			{
+	    	        				//String tmpString = tmpScanner.nextLine();
+	    	        				//if(tmpScanner.hasNextLine())
+	    	        				//{
+	    	        				//	if(finalSubmitted.equals(""))
+	    	        				//	{
+	    	        				//		finalSubmitted += tmpString;
+	    	        				//	}
+	    	        				//	else
+	    	        				//	{
+	    	        				//		finalSubmitted += "\n" + tmpString;
+	    	        				//	}
+	    	        				//}
+	    	        				finalSubmitted += "\n" + tmpScanner.nextLine();
+	    	        			}
+	    	        			submittedOutput = finalSubmitted;
+	    	        		}
+	    	        		
+	    	        		System.out.println("Grading: " + gradingOutput);
+	    	        		System.out.println("Submitted: " + submittedOutput);
+	    	        		if(gradingOutput.equals(submittedOutput))
+	    	        		{
+	    	        			//System.out.println("These are equal!");
+	    	        		}
+	    	        		else
+	    	        		{
+	    	        			numFailures++;
+	    	        		}
+	        			}
+	        			System.out.println("Failed " + numFailures + " out of " + numIterations);
+	    	        	
+	        			boolean correct = numFailures == 0;
+	        			boolean performance = true;
+	    	        	myConnector.gradeChallengeParticipant(challengeName, (String)myUser.getAttribute("email"), (int)previousMap.getAttribute("test_number"), numIterations - numFailures, correct, performance, false);
+	        			
+	    	        	String textToInsert = "";
+	    	        	if(correct && performance)
+	    	        	{
+	    	        		textToInsert = "<font color='green'>Test " + previousMap.getAttribute("test_number") + ": Passed " + (numIterations - numFailures) + "/" + numIterations + "</font>";
+	    	        	}
+	    	        	else
+	    	        	{
+	    	        		textToInsert = "<font color='red'>Test " + previousMap.getAttribute("test_number") + ": Passed " + (numIterations - numFailures) + "/" + numIterations + "</font><br />Failed on ";
+	    	        		if(!correct)
+	    	        		{
+	    	        			textToInsert += " correctness";
+	    	        			if(!performance)
+	    	        			{
+	    	        				textToInsert += " and ";
+	    	        			}
+	    	        			else
+	    	        			{
+	    	        				textToInsert += ".";
+	    	        			}
+	    	        		}
+	    	        		if(!performance)
+	    	        		{
+	    	        			textToInsert += "performance.";
+	    	        		}
+	    	        	}
+	    	        	redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + textToInsert + " <br />\";</script>");
+	    	        	redirectWriter.flush();
+	    	    		response.flushBuffer();
+	    	        	
+	    	        	String[] firejailClean = new String[2];
+	    	        	firejailClean[0] = "firejail";
+	    	        	firejailClean[1] = "--overlay-clean";
+	    	        	String clean = nativeInterface.executeCommand(firejailClean, tmpFile, environmentalVars);
+	    	        	System.out.println("Cleaning..." + clean);
+	        			previousMap = curMap;
+	    	        	testArgs = new ArrayList();
+	    	        	testArgs.add(curMap);
+	        		}
+	        	}
 	        	
-	        	runCmdArray[0] = "firejail";
-	        	runCmdArray[1] = "--quiet";
-	        	//runCmdArray[2] = "--whitelist="+genDir+"/submitted.out";
-	        	//runCmdArray[3] = "--read-write="+genDir+"/submitted.out";
-	        	runCmdArray[2] = "--noprofile";
-	        	//runCmdArray[3] = "--private";//=" + sc.getRealPath("/WEB-INF/");
-	        	//runCmdArray[4] = "--whitelist="+genDir+"/submitted.out";
-	        	runCmdArray[4] = "--overlay";
-	        	runCmdArray[3] = "--net=none";
-	        	//runCmdArray[3] = "--blacklist=/";
-	        	//runCmdArray[2] = "--noblacklist="+genDir+"/submitted.out";
-	        	
+	        	/*
 	        	int numFailures = 0;
 	        	int numIterations = (int) ((DBObj)curChallenge.get(0)).getAttribute("num_grading_iterations");
 	        	for(int x=0; x<numIterations; x++)
@@ -331,20 +535,25 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        	firejailClean[1] = "--overlay-clean";
 	        	String clean = nativeInterface.executeCommand(firejailClean, tmpFile, environmentalVars);
 	        	System.out.println("Cleaning..." + clean);
+	        	*/
 			}
 			catch(Exception e)
 			{
 				e.printStackTrace();
 			}
-		}
-		
-		if(uploadDataBool)
-		{
-			response.sendRedirect("activateDataUpload.jsp");
-		}
-		else
-		{
-			response.sendRedirect("myChallenges.jsp");
+			redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"Grading done.  Now redirecting... <br />\";</script>");
+			redirectWriter.flush();
+			response.flushBuffer();
+			if(uploadDataBool)
+			{
+				//response.sendRedirect("activateDataUpload.jsp");
+				redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=activateDataUpload.jsp\" /></head><body>Redirecting</html>");
+			}
+			else
+			{
+				//response.sendRedirect("myChallenges.jsp");
+				redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=myChallenges.jsp\" /></head></html>");
+			}
 		}
 	}
 

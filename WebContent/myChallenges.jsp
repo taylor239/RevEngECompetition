@@ -347,7 +347,7 @@
             translationMap.put("grade", "Grade");
             translationMap.put("num_grading_iterations", "Total Tests");
             translationMap.put("auto_grade_score", "Tests Passed");
-            boolean graded = (Boolean)(((DBObj)myChallenges.get(0)).getAttribute("auto_grade"));
+            boolean graded = (int)(((DBObj)myChallenges.get(0)).getAttribute("auto_grade")) == 0;
             graded = false;
             for(int x=0; x<keys.size(); x++)
             {

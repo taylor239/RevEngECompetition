@@ -35,7 +35,8 @@ CREATE TABLE `challenge` (
   `open_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `end_time` timestamp NOT NULL DEFAULT '0000-00-00 00:00:00',
   `description` text NOT NULL,
-  `type` varchar(20) NOT NULL DEFAULT 'assignment'
+  `type` varchar(20) NOT NULL DEFAULT 'assignment',
+  `auto_grade` tinyint(1) NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
 --
@@ -44,6 +45,34 @@ CREATE TABLE `challenge` (
 
 INSERT INTO `challenge` (`challenge_name`, `admin_email`, `open_time`, `end_time`, `description`, `type`) VALUES
 ('Assignment 1', 'cgtboy1988@yahoo.com', '2017-05-13 11:26:12', '2017-07-14 07:00:00', 'Just some instructions', 'assignment');
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `auto_grade_args`
+--
+
+DROP TABLE IF EXISTS `auto_grade_tests`;
+CREATE TABLE `auto_grade_tests` (
+  `challenge_name` varchar(100) NOT NULL,
+  `test_number` int(11) NOT NULL,
+  `num_iterations` int(11) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `auto_grade_args`
+--
+
+DROP TABLE IF EXISTS `auto_grade_args`;
+CREATE TABLE `auto_grade_args` (
+  `challenge_name` varchar(100) NOT NULL,
+  `test_number` int(11) NOT NULL,
+  `arg_order` int(11) NOT NULL,
+  `arg_type` varchar(25) DEFAULT NULL,
+  `arg_value` varchar(200) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
 -- --------------------------------------------------------
 
@@ -227,7 +256,8 @@ CREATE TABLE `user` (
   `changeURL` text,
   `changeUserEmail` varchar(50) DEFAULT NULL,
   `displayRealName` tinyint(1) NOT NULL DEFAULT '0',
-  `passwordPlaintext` text NOT NULL
+  `passwordPlaintext` text NOT NULL,
+  `downloadedDataCollection` tinyint(1) NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
 --
@@ -283,7 +313,22 @@ INSERT INTO `user_request` (`username`, `email`, `password`, `fName`, `mName`, `
 ALTER TABLE `challenge`
   ADD PRIMARY KEY (`challenge_name`),
   ADD KEY `admin_email` (`admin_email`);
-
+  
+--
+-- Indexes for table `auto_grade_tests`
+--
+ALTER TABLE `auto_grade_tests`
+  ADD PRIMARY KEY (`test_number`,`challenge_name`),
+  ADD KEY `challenge_name` (`challenge_name`);
+  
+--
+-- Indexes for table `auto_grade_args`
+--
+ALTER TABLE `auto_grade_args`
+  ADD PRIMARY KEY (`arg_order`,`test_number`,`challenge_name`),
+  ADD KEY `challenge_name` (`challenge_name`),
+  ADD KEY `auto_grade_args_default_ibfk_1` (`challenge_name`,`test_number`);
+  
 --
 -- Indexes for table `challenge_command`
 --
@@ -354,7 +399,20 @@ ALTER TABLE `user_request`
 --
 ALTER TABLE `challenge`
   ADD CONSTRAINT `challenge_ibfk_1` FOREIGN KEY (`admin_email`) REFERENCES `user` (`email`) ON UPDATE CASCADE;
+ 
+--
+-- Constraints for table `auto_grade_tests`
+--
+ALTER TABLE `auto_grade_tests`
+  ADD CONSTRAINT `auto_grade_tests_ibfk_1` FOREIGN KEY (`challenge_name`) REFERENCES `challenge` (`challenge_name`) ON DELETE CASCADE ON UPDATE CASCADE;
 
+--
+-- Constraints for table `auto_grade_args`
+--
+ALTER TABLE `auto_grade_args`
+  ADD CONSTRAINT `auto_grade_args_ibfk_1` FOREIGN KEY (`challenge_name`,`test_number`) REFERENCES `auto_grade_tests` (`challenge_name`, `test_number`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+  
 --
 -- Constraints for table `challenge_command`
 --
