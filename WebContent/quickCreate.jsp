@@ -238,14 +238,16 @@
         		}
         		
         		String selectedItem = "";
+        		String id = "";
         		if(x==0)
         		{
         			selectedItem = "checked";
+        			id = "id=\"selectedRadioButton\"";
         		}
         %>
         		<tr>
         		<td>
-				<input onclick="changeProblem(this)" type="radio" name="default" value="<%=curChallenge.getAttribute("challenge_name") %>" <%=selectedItem %>><%=curChallenge.getAttribute("challenge_name") %><%=isSiteDefault %>
+				<input onclick="changeProblem(this)" <%=id %> type="radio" name="default" value="<%=curChallenge.getAttribute("challenge_name") %>" <%=selectedItem %>><%=curChallenge.getAttribute("challenge_name") %><%=isSiteDefault %>
 				</input>
 				</td>
 				</tr>
@@ -260,15 +262,32 @@
 		</tr>
 		<script>
 		var problemDescs = {};
+		
 		var problemCommands = {};
 		var problemCommandNum = {};
 		var problemCommandName = {};
+		
+		
+		var problemGradeTestsPerformance = {};
+		var problemGradeTestsIterations = {};
+		var problemGradeTestsArgNum = {};
+		
+		var problemGradeTestsArgValue = {};
+		var problemGradeTestsArgType = {};
+		
+		var problemGradeNum = {};
+		
 		<%
 			doneMap = new HashMap();
 			HashMap problemMaxMap = new HashMap();
         	for(int x=0; x<defaultChallenges.size(); x++)
         	{
         		DBObj curChallenge = (DBObj)defaultChallenges.get(x);
+        		ArrayList grading = new ArrayList();
+        		if(curChallenge.getAttribute("auto_grade").equals(true))
+        		{
+        			grading = (ArrayList)curChallenge.getAttribute("grading");
+        		}
         		int max = 0;
         		if(problemMaxMap.containsKey(curChallenge.getAttribute("challenge_name")))
         		{
@@ -297,6 +316,71 @@
         %>
 				problemDescs["<%=curChallenge.getAttribute("challenge_name") %>"] = "<%=curChallenge.getAttribute("description") %>";
 		<%
+				int numTests = 0;
+				int curTestNum = -1;
+				int curLength = 0;
+				if(grading.isEmpty())
+				{
+					numTests = -1;
+				}
+				for(int y=0; y<grading.size(); y++)
+				{
+					DBObj curTest = (DBObj)grading.get(y);
+					if(curTestNum < 0)
+					{
+						curLength = 0;
+						curTestNum = (int)curTest.getAttribute("test_number");
+						%>
+						problemGradeTestsPerformance["<%=(String)curChallenge.getAttribute("challenge_name") + "_" + curTestNum %>"] = <%=curTest.getAttribute("performance_multiplier") %>
+						problemGradeTestsIterations["<%=(String)curChallenge.getAttribute("challenge_name") + "_" + curTestNum %>"] = <%=curTest.getAttribute("num_iterations") %>;
+						<%
+					}
+					else if(!curTest.getAttribute("test_number").equals(curTestNum))
+					{
+						curLength = 0;
+						curTestNum = (int)curTest.getAttribute("test_number");
+						numTests++;
+						%>
+						problemGradeTestsPerformance["<%=(String)curChallenge.getAttribute("challenge_name") + "_" + curTestNum %>"] = <%=curTest.getAttribute("performance_multiplier") %>
+						problemGradeTestsIterations["<%=(String)curChallenge.getAttribute("challenge_name") + "_" + curTestNum %>"] = <%=curTest.getAttribute("num_iterations") %>;
+						<%
+					}
+					
+					
+					
+					if(curTest.containsKey("arg_value") && !((String)curTest.getAttribute("arg_value")).isEmpty())
+					{
+					%>
+					problemGradeTestsArgValue["<%=(String)curChallenge.getAttribute("challenge_name") + "_" + curTestNum + "_" + curLength %>"] = "<%=curTest.getAttribute("arg_value") %>";
+					<%
+					}
+					%>
+					problemGradeTestsArgType["<%=(String)curChallenge.getAttribute("challenge_name") + "_" + curTestNum + "_" + curLength %>"] = "<%=curTest.getAttribute("arg_type") %>";
+					<%
+					
+					
+					if(y+1 >= grading.size())
+					{
+						%>
+						problemGradeTestsArgNum["<%=(String)curChallenge.getAttribute("challenge_name") + "_" + curTestNum %>"] = <%=curLength %>;
+						<%
+					}
+					else
+					{
+						DBObj nextTest = (DBObj)grading.get(y + 1);
+						if(!nextTest.getAttribute("test_number").equals(curTestNum))
+						{
+							%>
+							problemGradeTestsArgNum["<%=(String)curChallenge.getAttribute("challenge_name") + "_" + curTestNum %>"] = <%=curLength %>;
+							<%
+						}
+					}
+					
+					curLength++;
+				}
+				%>
+				problemGradeNum["<%=curChallenge.getAttribute("challenge_name") %>"] = <%=numTests %>;
+				<%
         	}
         	
         	Iterator curIterator = problemMaxMap.entrySet().iterator();
@@ -353,6 +437,102 @@
             	</tr>\
             	"
     		}
+    		
+    		var numTests = problemGradeNum[selectEle.value];
+    		
+    		hiddenTableHTML += "<tr style=\"display:none;\">\
+            	<td colspan=\"2\">\
+            	<table class=\"news_item_table\" width=\"100%\" style=\"display:none;\">\
+            	<tr style=\"display:none;\">\
+            	<td width=\"33%\">\
+    	        Number of Tests:\
+    	        </td>\
+    	        <td width=\"67%\">\
+    	        <input form=\"updateForm\" style=\"width:90%\" type=\"hidden\" name=\"numTests\" value=\"" + numTests + "\"></input>\
+    	        </td>\
+            	</tr>\
+            	</table>\
+            	</td>\
+            	</tr>\
+            	"
+    		
+    		for(var x=0; x<=numTests; x++)
+    		{
+    			console.log(x);
+    			//console.log(problemCommandName[selectEle.value + "Command" + x]);
+    			//console.log(problemCommands[selectEle.value + "Command" + x]);
+    			hiddenTableHTML += "<tr style=\"display:none;\">\
+            	<td colspan=\"2\">\
+            	<table class=\"news_item_table\" width=\"100%\" style=\"display:none;\">\
+            	<tr style=\"display:none;\">\
+            	<td width=\"33%\">\
+    	        Test Number:\
+    	        </td>\
+    	        <td width=\"67%\">\
+    	        <input form=\"updateForm\" style=\"width:90%\" type=\"hidden\" name=\"test_order_" + x + "\" value=\"" + x + "\"></input>\
+    	        </td>\
+            	</tr>\
+            	<tr style=\"display:none;\">\
+            	<td width=\"33%\">\
+    	        Iterations:\
+    	        </td>\
+    	        <td width=\"67%\">\
+    	        <input form=\"updateForm\" style=\"width:90%\" type=\"hidden\" name=\"testIterations_" + x + "\" value=\"" + problemGradeTestsIterations[selectEle.value + "_" + x] + "\"></input>\
+    	        </td>\
+            	</tr>\
+            	<tr style=\"display:none;\">\
+            	<td width=\"33%\">\
+    	        Performance:\
+    	        </td>\
+    	        <td width=\"67%\">\
+    	        <input type=\"hidden\" form=\"updateForm\" style=\"width:90%\" name=\"testPerformance_" + x + "\" value=\"" + problemGradeTestsPerformance[selectEle.value + "_" + x] + "\">\
+    	        </td>\
+            	</tr>\
+            	<tr style=\"display:none;\">\
+            	<td width=\"33%\">\
+    	        Number of Arguments:\
+    	        </td>\
+    	        <td width=\"67%\">\
+    	        <input type=\"hidden\" form=\"updateForm\" style=\"width:90%\" name=\"testArguments_" + x + "\" value=\"" + problemGradeTestsArgNum[selectEle.value + "_" + x] + "\">\
+    	        </td>\
+            	</tr>";
+            	
+            	var numArgs = problemGradeTestsArgNum[selectEle.value + "_" + x];
+            	
+            	for(var y=0; y<=numArgs; y++)
+            	{
+            		hiddenTableHTML += "<tr style=\"display:none;\">\
+                	<td width=\"33%\">\
+        	        Argument Number:\
+        	        </td>\
+        	        <td width=\"67%\">\
+        	        <input type=\"hidden\" form=\"updateForm\" style=\"width:90%\" name=\"argNum_" + x + "_" + y + "\" value=\"" + y + "\">\
+        	        </td>\
+                	</tr>\
+                	<tr style=\"display:none;\">\
+                	<td width=\"33%\">\
+        	        Argument Type:\
+        	        </td>\
+        	        <td width=\"67%\">\
+        	        <input type=\"hidden\" form=\"updateForm\" style=\"width:90%\" name=\"argType_" + x + "_" + y + "\" value=\"" + problemGradeTestsArgType[selectEle.value + "_" + x + "_" + y] + "\">\
+        	        </td>\
+                	</tr>\
+                	<tr style=\"display:none;\">\
+                	<td width=\"33%\">\
+        	        Argument Value:\
+        	        </td>\
+        	        <td width=\"67%\">\
+        	        <input type=\"hidden\" form=\"updateForm\" style=\"width:90%\" name=\"argValue_" + x + "_" + y + "\" value=\"" + problemGradeTestsArgValue[selectEle.value + "_" + x + "_" + y] + "\">\
+        	        </td>\
+                	</tr>";
+            	}
+            	
+            	hiddenTableHTML += "</table>\
+            	</td>\
+            	</tr>\
+            	"
+    		}
+    		
     		document.getElementById("hiddenTable").innerHTML = hiddenTableHTML;
     		document.getElementById("descriptionCell").innerHTML = problemDescs[selectEle.value];
     	}
@@ -729,7 +909,10 @@
         </form>
         </td>
         <td width="25%">
-        
+        <script>
+		document.getElementById("selectedRadioButton").checked="true";
+		changeProblem(document.getElementById("selectedRadioButton"));
+		</script>
         </td>
     </tr>
 </table>

@@ -61,11 +61,6 @@
         <tr>
         <td>
         <table class="news_table">
-        <tr class="title_general">
-        <td colspan="3" align="center">
-        Welcome
-        </td>
-    	</tr>
         <tr>
         <td>
         <table class="news_item_table">

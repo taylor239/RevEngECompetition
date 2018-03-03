@@ -17,6 +17,7 @@
         
         <%
         ArrayList myChallengesFull = new ArrayList();
+        ArrayList myChallengesFullGrade = new ArrayList();
         ArrayList challengeAssignment = new ArrayList();
         ArrayList alreadyAssignedList = new ArrayList();
         ArrayList allStudents = new ArrayList();
@@ -40,7 +41,14 @@
         	}
         	
 	        myChallengesFull = myConnector.getChallenge((String)request.getParameter("challengeName"), (String)myUser.getAttribute("email"));
-	        challengeAssignment = myConnector.getChallengeAssignment((String)myUser.getAttribute("email"), (String)request.getParameter("challengeName"));
+	        
+	        if(((DBObj)myChallengesFull.get(0)).getAttribute("auto_grade").equals(true))
+	        {
+	        	System.out.println("getting grading");
+	        	myChallengesFullGrade = myConnector.getChallengeAutoGrade((String)myUser.getAttribute("email"), (String)request.getParameter("challengeName"));
+	        	System.out.println(myChallengesFullGrade);
+	        }
+	        	
 	        allStudents = myConnector.getAdminStudents((String)myUser.getAttribute("email"));
 	        
 	        if(verbose)
@@ -50,10 +58,10 @@
 	        
 	        DBObj challengeHead = (DBObj)myChallengesFull.get(0);
 	        //boolean detailed = true;
-	        if((((DBObj)myChallengesFull.get(0)).getAttribute("type")).equals("assignment"))
-	        {
+	        //if((((DBObj)myChallengesFull.get(0)).getAttribute("type")).equals("assignment"))
+	        //{
 	        	detailed = false;
-	        }
+	        //}
 	        //String nonDetailedAppend = "style=\"display:none;\"";
 	        if(detailed)
 	        {
@@ -352,6 +360,7 @@
         </table>
         </td>
         </tr>
+        
         <tr>
         <td>
         <table width="100%">
@@ -366,6 +375,146 @@
         </table>
         </td>
         </tr>
+        
+        <%
+        if(!myChallengesFullGrade.isEmpty())
+        {
+        	int numTests = 0;
+        	for(int x=0; x<myChallengesFullGrade.size(); x++)
+    		{
+				
+    			DBObj curTest = (DBObj)myChallengesFullGrade.get(x);
+    			ArrayList argList = new ArrayList();
+    			argList.add(curTest);
+    			if(x + 1 < myChallengesFullGrade.size())
+    			{
+    				int y = x + 1;
+    				DBObj nextTest = (DBObj)myChallengesFullGrade.get(y);
+    				while(y < myChallengesFullGrade.size() && nextTest.getAttribute("test_number").equals(curTest.getAttribute("test_number")))
+    				{
+    					argList.add(nextTest);
+    					y++;
+    					if(y < myChallengesFullGrade.size())
+    					{
+    						nextTest = (DBObj)myChallengesFullGrade.get(y);
+    					}
+    				}
+    				numTests++;
+    				x = y;
+    			}
+    		}
+        %>
+        		<tr style="display:none;">
+            	<td colspan="2">
+            	<table class="news_item_table" width="100%" style="display:none;">
+            	<tr style="display:none;">
+            	<td width="33%">
+    	        Number of Tests:
+    	        </td>
+    	        <td width="67%">
+    	        <input form="updateForm" style="width:90%" type="hidden" name="numTests" value="<%=numTests %>"></input>
+    	        </td>
+            	</tr>
+            	</table>
+            	</td>
+            	</tr>
+        		<%
+        		for(int x=0; x<myChallengesFullGrade.size(); x++)
+        		{
+
+        			DBObj curTest = (DBObj)myChallengesFullGrade.get(x);
+        			ArrayList argList = new ArrayList();
+        			argList.add(curTest);
+        			if(x + 1 < myChallengesFullGrade.size())
+        			{
+        				int y = x + 1;
+        				DBObj nextTest = (DBObj)myChallengesFullGrade.get(y);
+        				while(y < myChallengesFullGrade.size() && nextTest.getAttribute("test_number").equals(curTest.getAttribute("test_number")))
+        				{
+        					argList.add(nextTest);
+        					y++;
+        					if(y < myChallengesFullGrade.size())
+        					{
+        						nextTest = (DBObj)myChallengesFullGrade.get(y);
+        					}
+        				}
+        			}
+        		%>
+        		<tr style="display:none;">
+            	<td colspan="2">
+            	<table class="news_item_table" width="100%" style="display:none;">
+            	<tr style="display:none;">
+            	<td width="33%">
+    	        Test Number:
+    	        </td>
+    	        <td width="67%">
+    	        <input form="updateForm" style="width:90%" type="hidden" name="test_order_<%=curTest.getAttribute("test_number") %>" value="<%=curTest.getAttribute("test_number") %>"></input>
+    	        </td>
+            	</tr>
+            	<tr style="display:none;">
+            	<td width="33%">
+    	        Iterations:
+    	        </td>
+    	        <td width="67%">
+    	        <input form="updateForm" style="width:90%" type="hidden" name="testIterations_<%=curTest.getAttribute("test_number") %>" value="<%=curTest.getAttribute("num_iterations") %>"></input>
+    	        </td>
+            	</tr>
+            	<tr style="display:none;">
+            	<td width="33%">
+    	        Performance:
+    	        </td>
+    	        <td width="67%">
+    	        <input type="hidden" form="updateForm" style="width:90%" name="testPerformance_<%=curTest.getAttribute("test_number") %>" value="<%=curTest.getAttribute("performance_multiplier") %>">
+    	        </td>
+            	</tr>
+            	<tr style="display:none;">
+            	<td width="33%">
+    	        Number of Arguments:
+    	        </td>
+    	        <td width="67%">
+    	        <input type="hidden" form="updateForm" style="width:90%" name="testArguments_<%=curTest.getAttribute("test_number") %>" value="<%=argList.size() - 1 %>">
+    	        </td>
+            	</tr>
+        		<%
+        			for(int y=0; y<argList.size(); y++)
+        			{
+        				DBObj curArg = (DBObj)argList.get(y);
+        				%>
+        				<tr style="display:none;">
+	                	<td width="33%">
+	        	        Argument Number:
+	        	        </td>
+	        	        <td width="67%">
+	        	        <input type="hidden" form="updateForm" style="width:90%" name="argNum_<%=curTest.getAttribute("test_number") %>_<%=curArg.getAttribute("arg_order") %>" value="<%=curArg.getAttribute("arg_order") %>">
+	        	        </td>
+	                	</tr>
+	                	<tr style="display:none;">
+	                	<td width="33%">
+	        	        Argument Type:
+	        	        </td>
+	        	        <td width="67%">
+	        	        <input type="hidden" form="updateForm" style="width:90%" name="argType_<%=curTest.getAttribute("test_number") %>_<%=curArg.getAttribute("arg_order") %>" value="<%=curArg.getAttribute("arg_type") %>">
+	        	        </td>
+	                	</tr>
+	                	<tr style="display:none;">
+	                	<td width="33%">
+	        	        Argument Value:
+	        	        </td>
+	        	        <td width="67%">
+	        	        <input type="hidden" form="updateForm" style="width:90%" name="argValue_<%=curTest.getAttribute("test_number") %>_<%=curArg.getAttribute("arg_order") %>" value="<%=curArg.getAttribute("arg_value") %>">
+	        	        </td>
+	                	</tr>
+        				<%
+        			}
+        			%>
+        			</table>
+	            	</td>
+	            	</tr>
+        			<%
+        		}
+        }
+            	%>
+        
         </table>
         </td>
         </tr>

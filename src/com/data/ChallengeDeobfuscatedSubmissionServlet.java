@@ -111,15 +111,16 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 		myConnector.removeChallengeParticipantTests(challengeName, (String)myUser.getAttribute("email"));
 		
 		//Send redirect here, because grading takes a while.
-		PrintWriter redirectWriter = response.getWriter();
 		
-		request.getRequestDispatcher("./gradeWaiting.jsp").include(request, response);
-		
-		redirectWriter.flush();
-		response.flushBuffer();
 		
 		if((boolean) ((DBObj)curChallenge.get(0)).getAttribute("auto_grade"))
 		{
+			PrintWriter redirectWriter = response.getWriter();
+			
+			request.getRequestDispatcher("./gradeWaiting.jsp").include(request, response);
+			
+			redirectWriter.flush();
+			response.flushBuffer();
 			ArrayList gradeChallenge = myConnector.getChallengeAutoGrade(challengeName);
 			//System.out.println(((DBObj)gradeChallenge.get(0)).getAttributes());
 			ServerManager nativeInterface = ServerManager.getInstance();
@@ -189,22 +190,163 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        	}
 	        	FileUtils.writeByteArrayToFile(new File(genDir + "/submitted.c"), (byte[])((DBObj)curChallenge.get(0)).getAttribute("submittedFile"));
 	        	
-	        	String[] compileCmdArray = new String[3];
+	        	
+	        	
+	        	String[] compileCmdArray;// = new String[3];
+	        	
+	        	//clang-5.0 -emit-llvm -c -o sample.bc sample.c
+	        	compileCmdArray = new String[6];
+	        	compileCmdArray[0] = "clang-5.0";
+	        	compileCmdArray[1] = "-emit-llvm";
+	        	compileCmdArray[2] = "-c";
+	        	compileCmdArray[3] = "-o";
+	        	compileCmdArray[4] = genDir + "/grading.bc";
+	        	compileCmdArray[5] = genDir + "/grading.c";
+	        	String nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+	        	System.out.println(tmpFile.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	//opt-5.0 -load ../passes/llvm-pass-countloads/build/countloads/libCountLoadsPass.so -countloads sample.bc -o sample_count.bc
+	        	compileCmdArray = new String[7];
+	        	compileCmdArray[0] = "opt-5.0";
+	        	compileCmdArray[1] = "-load";
+	        	compileCmdArray[2] = genDir + "/../../../local_bin/performanceCounter/build/countloads/libCountLoadsPass.so";
+	        	compileCmdArray[3] = "-countloads";
+	        	compileCmdArray[4] = genDir + "/grading.bc";
+	        	compileCmdArray[5] = "-o";
+	        	compileCmdArray[6] = genDir + "/grading_count.bc";
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, genDir, environmentalVars);
+	        	System.out.println(genDir.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	//clang-5.0 -emit-llvm -O3 -c -o exithandler.bc exithandler.c
+	        	compileCmdArray[0] = "clang-5.0";
+	        	compileCmdArray[1] = "-emit-llvm";
+	        	compileCmdArray[2] = "-O3";
+	        	compileCmdArray[3] = "-c";
+	        	compileCmdArray[4] = "-o";
+	        	compileCmdArray[5] = genDir + "/exithandler.bc";
+	        	compileCmdArray[6] = genDir + "/exithandler.c";
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+	        	System.out.println(tmpFile.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	//llvm-link-5.0 exithandler.bc sample_count.bc -o sample_linked.bc
+	        	compileCmdArray = new String[5];
+	        	compileCmdArray[0] = "llvm-link-5.0";
+	        	compileCmdArray[1] = genDir + "/exithandler.bc";
+	        	compileCmdArray[2] = genDir + "/grading_count.bc";
+	        	compileCmdArray[3] = "-o";
+	        	compileCmdArray[4] = genDir + "/grading_count_linked.bc";
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+	        	System.out.println(tmpFile.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	//llc-5.0 sample_linked.bc
+	        	compileCmdArray = new String[2];
+	        	compileCmdArray[0] = "llc-5.0";
+	        	compileCmdArray[1] = genDir + "/grading_count_linked.bc";
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+	        	System.out.println(tmpFile.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	//g++ -O3 sample_linked.s -o sample_linked.out
+	        	compileCmdArray = new String[5];
+	        	compileCmdArray[0] = "g++";
+	        	compileCmdArray[1] = "-O3";
+	        	compileCmdArray[2] = genDir + "/grading_count_linked.s";
+	        	compileCmdArray[3] = "-o";
+	        	compileCmdArray[4] = genDir + "/grading.out";
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+	        	System.out.println(tmpFile.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	/*
+	        	compileCmdArray = new String[3];
 	        	compileCmdArray[0] = "gcc";
 	        	compileCmdArray[1] = genDir + "/grading.c";
 	        	compileCmdArray[2] = "-o"+genDir+"/grading.out";
-	        	String nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
 	        	System.out.println(tmpFile.getAbsolutePath());
 	        	System.out.println(compileCmdArray[2]);
 	        	System.out.println(nativeOutput);
+	        	*/
 	        	
+	        	//clang-5.0 -emit-llvm -c -o sample.bc sample.c
+	        	compileCmdArray = new String[6];
+	        	compileCmdArray[0] = "clang-5.0";
+	        	compileCmdArray[1] = "-emit-llvm";
+	        	compileCmdArray[2] = "-c";
+	        	compileCmdArray[3] = "-o";
+	        	compileCmdArray[4] = genDir + "/submitted.bc";
+	        	compileCmdArray[5] = genDir + "/submitted.c";
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+	        	System.out.println(tmpFile.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	//opt-5.0 -load ../passes/llvm-pass-countloads/build/countloads/libCountLoadsPass.so -countloads sample.bc -o sample_count.bc
+	        	compileCmdArray = new String[7];
+	        	compileCmdArray[0] = "opt-5.0";
+	        	compileCmdArray[1] = "-load";
+	        	compileCmdArray[2] = genDir + "/../../../local_bin/performanceCounter/build/countloads/libCountLoadsPass.so";
+	        	compileCmdArray[3] = "-countloads";
+	        	compileCmdArray[4] = genDir + "/submitted.bc";
+	        	compileCmdArray[5] = "-o";
+	        	compileCmdArray[6] = genDir + "/submitted_count.bc";
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, genDir, environmentalVars);
+	        	System.out.println(genDir.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	//clang-5.0 -emit-llvm -O3 -c -o exithandler.bc exithandler.c
+	        	compileCmdArray[0] = "clang-5.0";
+	        	compileCmdArray[1] = "-emit-llvm";
+	        	compileCmdArray[2] = "-O3";
+	        	compileCmdArray[3] = "-c";
+	        	compileCmdArray[4] = "-o";
+	        	compileCmdArray[5] = genDir + "/exithandler.bc";
+	        	compileCmdArray[6] = genDir + "/exithandler.c";
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+	        	System.out.println(tmpFile.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	//llvm-link-5.0 exithandler.bc sample_count.bc -o sample_linked.bc
+	        	compileCmdArray = new String[5];
+	        	compileCmdArray[0] = "llvm-link-5.0";
+	        	compileCmdArray[1] = genDir + "/exithandler.bc";
+	        	compileCmdArray[2] = genDir + "/submitted_count.bc";
+	        	compileCmdArray[3] = "-o";
+	        	compileCmdArray[4] = genDir + "/submitted_count_linked.bc";
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+	        	System.out.println(tmpFile.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	//llc-5.0 sample_linked.bc
+	        	compileCmdArray = new String[2];
+	        	compileCmdArray[0] = "llc-5.0";
+	        	compileCmdArray[1] = genDir + "/submitted_count_linked.bc";
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+	        	System.out.println(tmpFile.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	//g++ sample_linked.s -o sample_linked.out
+	        	compileCmdArray = new String[5];
+	        	compileCmdArray[0] = "g++";
+	        	compileCmdArray[1] = "-O3";
+	        	compileCmdArray[2] = genDir + "/submitted_count_linked.s";
+	        	compileCmdArray[3] = "-o";
+	        	compileCmdArray[4] = genDir + "/submitted.out";
+	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+	        	System.out.println(tmpFile.getAbsolutePath());
+	        	System.out.println(nativeOutput);
+	        	
+	        	/*
 	        	compileCmdArray = new String[3];
 	        	compileCmdArray[0] = "gcc";
 	        	compileCmdArray[1] = genDir + "/submitted.c";
 	        	compileCmdArray[2] = "-o"+genDir+"/submitted.out";
 	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
 	        	System.out.println(nativeOutput);
-	        	
+	        	*/
 	        	
 	        	DBObj previousMap = (DBObj) gradeChallenge.get(0);
 	        	ArrayList testArgs = new ArrayList();
@@ -227,6 +369,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        			ArrayList outputInput = myConnector.getChallengeAutoGradeInput((String)previousMap.getAttribute("challenge_name"), (int)previousMap.getAttribute("test_number"));
 	        			int numIterations = (int)previousMap.getAttribute("num_iterations");
 	        			int numFailures = 0;
+	        			int numPerformanceFailures = 0;
 	        			redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Testing " + numIterations + " values." + " <br />\";</script>");
 	        			redirectWriter.flush();
 	    	    		response.flushBuffer();
@@ -308,6 +451,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        		//System.out.println(gradingOutput);
 	    	        		
 	    	        		Scanner tmpScanner = new Scanner(gradingOutput);
+	    	        		HashMap gradingPerformance = new HashMap();
 	    	        		if(tmpScanner.hasNextLine())
 	    	        		{
 	    	        			//tmpScanner.nextLine();
@@ -327,11 +471,33 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        				//		finalGraded += "\n" + tmpString;
 	    	        				//	}
 	    	        				//}
-	    	        				finalGraded += "\n" + tmpScanner.nextLine();
+	    	        				String theNextLine = tmpScanner.nextLine();
+	    	        				if(theNextLine.equals("PERFORMANCE"))
+	    	        				{
+	    	        					//System.out.println("Getting performance data:");
+	    	        					int total = 0;
+	    	        					while(tmpScanner.hasNextLine())
+	    	        					{
+	    	        						String nextLine = tmpScanner.nextLine();
+	    	        						Scanner lineScanner = new Scanner(nextLine);
+	    	        						String instructionType = lineScanner.next();
+	    	        						int count = lineScanner.nextInt();
+	    	        						instructionType = instructionType.replace(":", "");
+	    	        						//System.out.println(instructionType + ", " + count);
+	    	        						gradingPerformance.put(instructionType, count);
+	    	        						total += count;
+	    	        					}
+	    	        					gradingPerformance.put("total", total);
+	    	        				}
+	    	        				else
+	    	        				{
+	    	        					finalGraded += "\n" + theNextLine;
+	    	        				}
 	    	        			}
 	    	        			gradingOutput = finalGraded;
 	    	        		}
 	    	        		
+	    	        		HashMap submittedPerformance = new HashMap();
 	    	        		tmpScanner = new Scanner(submittedOutput);
 	    	        		if(tmpScanner.hasNextLine())
 	    	        		{
@@ -352,7 +518,28 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        				//		finalSubmitted += "\n" + tmpString;
 	    	        				//	}
 	    	        				//}
-	    	        				finalSubmitted += "\n" + tmpScanner.nextLine();
+	    	        				String theNextLine = tmpScanner.nextLine();
+	    	        				if(theNextLine.equals("PERFORMANCE"))
+	    	        				{
+	    	        					//System.out.println("Getting performance data:");
+	    	        					int total = 0;
+	    	        					while(tmpScanner.hasNextLine())
+	    	        					{
+	    	        						String nextLine = tmpScanner.nextLine();
+	    	        						Scanner lineScanner = new Scanner(nextLine);
+	    	        						String instructionType = lineScanner.next();
+	    	        						int count = lineScanner.nextInt();
+	    	        						instructionType = instructionType.replace(":", "");
+	    	        						//System.out.println(instructionType + ", " + count);
+	    	        						submittedPerformance.put(instructionType, count);
+	    	        						total += count;
+	    	        					}
+	    	        					submittedPerformance.put("total", total);
+	    	        				}
+	    	        				else
+	    	        				{
+	    	        					finalSubmitted += "\n" + theNextLine;
+	    	        				}
 	    	        			}
 	    	        			submittedOutput = finalSubmitted;
 	    	        		}
@@ -362,6 +549,35 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        		if(gradingOutput.equals(submittedOutput))
 	    	        		{
 	    	        			//System.out.println("These are equal!");
+	    	        			boolean perfFail = false;
+	    	        			for(Object instruction : submittedPerformance.keySet())
+		    	        		{
+		    	        			//System.out.println("Comparing " + instruction);
+		    	        			int submittedCount = (int) submittedPerformance.get(instruction);
+		    	        			int gradingCount = 1;
+		    	        			if(gradingPerformance.containsKey(instruction))
+		    	        			{
+		    	        				gradingCount = (int) gradingPerformance.get(instruction);
+		    	        				if(gradingCount < 1)
+		    	        				{
+		    	        					gradingCount = 1;
+		    	        				}
+		    	        			}
+		    	        			double performance = (double) previousMap.getAttribute("performance_multiplier");
+		    	        			//System.out.println("Multiplier: " + performance);
+		    	        			//System.out.println(submittedCount + ", " + gradingCount);
+		    	        			if(submittedCount > performance * gradingCount)
+		    	        			{
+		    	        				//System.out.println("Failed this instruction");
+		    	        				//numFailures++;
+		    	        				perfFail = true;
+		    	        				break;
+		    	        			}
+		    	        		}
+	    	        			if(perfFail)
+	    	        			{
+	    	        				numPerformanceFailures++;
+	    	        			}
 	    	        		}
 	    	        		else
 	    	        		{
@@ -369,10 +585,11 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        		}
 	        			}
 	        			System.out.println("Failed " + numFailures + " out of " + numIterations);
-	    	        	
+	        			System.out.println("Performance Failed " + numPerformanceFailures + " out of " + numIterations);
+	        			
 	        			boolean correct = numFailures == 0;
-	        			boolean performance = true;
-	    	        	myConnector.gradeChallengeParticipant(challengeName, (String)myUser.getAttribute("email"), (int)previousMap.getAttribute("test_number"), numIterations - numFailures, correct, performance, false);
+	        			boolean performance = numPerformanceFailures == 0;
+	    	        	myConnector.gradeChallengeParticipant(challengeName, (String)myUser.getAttribute("email"), (int)previousMap.getAttribute("test_number"), numIterations - (numFailures + numPerformanceFailures), correct, performance, false);
 	        			
 	    	        	String textToInsert = "";
 	    	        	if(correct && performance)
@@ -554,6 +771,11 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 				//response.sendRedirect("myChallenges.jsp");
 				redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=myChallenges.jsp\" /></head></html>");
 			}
+		}
+		else
+		{
+			PrintWriter redirectWriter = response.getWriter();
+			redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"0; url=myChallenges.jsp\" /></head></html>");
 		}
 	}
 

@@ -1,0 +1,6 @@
+# This is the example usage for the test in ../../../testing
+clang -emit-llvm -O0 -c -o exithandler.bc exithandler.c
+clang -emit-llvm -O0 -c -o test.bc test.cpp
+opt -load ../passes/llvm-pass-countloads/build/countloads/libCountLoadsPass.so -countloads test.bc -o test.counter.bc
+llvm-link exithandler.bc test.counter.bc -S -o=testFinal.bc
+lli testFinal.bc

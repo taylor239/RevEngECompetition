@@ -613,35 +613,85 @@ public class DatabaseConnector
 		ArrayList myReturn = new ArrayList();
 		try
 		{
-			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge_participant INNER JOIN challenge ON challenge_participant.challenge_name = challenge.challenge_name WHERE challenge_participant.email = ?");
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge_participant INNER JOIN challenge ON challenge_participant.challenge_name = challenge.challenge_name LEFT JOIN challenge_participant_grades ON challenge_participant_grades.email = challenge_participant.email AND challenge_participant_grades.challenge_name = challenge_participant.challenge_name LEFT JOIN auto_grade_tests ON challenge_participant_grades.challenge_name = auto_grade_tests.challenge_name AND challenge_participant_grades.test_number = auto_grade_tests.test_number WHERE challenge_participant.email = ?");
 			myStmt.setString(1, username);
 			ResultSet myResults=myStmt.executeQuery();
 			//disconnect();
 			ResultSetMetaData meta=myResults.getMetaData();
 			int columns=meta.getColumnCount();
+			int curJoin = 0;
 			while(myResults.next())
 			{
-				attributes=new ConcurrentHashMap();
-				for(int x=1; x<=columns; x++)
+				if(attributes == null || attributes.isEmpty() || !attributes.get("challenge_name").equals(myResults.getObject("challenge_name")))
 				{
-					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					curJoin = 0;
+					attributes=new ConcurrentHashMap();
+					for(int x=1; x<=columns; x++)
 					{
-						
-					}
-					else
-					{
-						if(myResults.getObject(x)!=null)
+						if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
 						{
-							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+							
 						}
 						else
 						{
-							attributes.put(meta.getColumnLabel(x), "");
+							if(myResults.getObject(x)!=null)
+							{
+								attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+							}
+							else
+							{
+								if(!attributes.containsKey(meta.getColumnLabel(x)))
+								{
+									attributes.put(meta.getColumnLabel(x), "");
+								}
+							}
+						}
+					}
+					DBObj tmp = new DBObj(attributes, false, tables);
+					myReturn.add(tmp);
+				}
+				else
+				{
+					curJoin++;
+					HashMap alreadyUsed = new HashMap();
+					for(int x=1; x<=columns; x++)
+					{
+						if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+						{
+							
+						}
+						else
+						{
+							if(myResults.getObject(x)!=null)
+							{
+								if(!alreadyUsed.containsKey(meta.getColumnLabel(x)) && attributes.containsKey(meta.getColumnLabel(x)) && !attributes.get(meta.getColumnLabel(x)).equals(myResults.getObject(x)) && !meta.getColumnLabel(x).equals("challenge_name") && !meta.getColumnLabel(x).equals("email"))
+								{
+									alreadyUsed.put(meta.getColumnLabel(x), true);
+									Object curVal = attributes.get(meta.getColumnLabel(x));
+									if(curVal instanceof ArrayList)
+									{
+										((ArrayList) curVal).add(myResults.getObject(x));
+									}
+									else
+									{
+										ArrayList toInsert = new ArrayList();
+										for(int z=0; z<curJoin; z++)
+										{
+											toInsert.add(curVal);
+										}
+										toInsert.add(myResults.getObject(x));
+										attributes.put(meta.getColumnLabel(x), toInsert);
+									}
+								}
+								//attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+							}
+							else
+							{
+								//attributes.put(meta.getColumnLabel(x), "");
+							}
 						}
 					}
 				}
-				DBObj tmp = new DBObj(attributes, false, tables);
-				myReturn.add(tmp);
 			}
 		}
 		catch(Exception e)
@@ -675,7 +725,7 @@ public class DatabaseConnector
 		ArrayList myReturn = new ArrayList();
 		try
 		{
-			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM `challenge_participant` INNER JOIN `challenge` ON `challenge`.`challenge_name` = `challenge_participant`.`challenge_name` INNER JOIN `role` ON `challenge_participant`.`email` = `role`.`email` WHERE `challenge`.`admin_email` = ? AND `challenge`.`challenge_name` = ? ORDER BY `role`.`course`");
+			PreparedStatement myStmt=connection.prepareStatement("SELECT `challenge_participant`.*, `challenge`.*, `role`.*, SUM(`challenge_participant_grades`.`correct`) AS `auto_grade_score`, COUNT(`auto_grade_tests`.`test_number`) AS `num_grading_iterations` FROM `challenge_participant` INNER JOIN `challenge` ON `challenge`.`challenge_name` = `challenge_participant`.`challenge_name` INNER JOIN `role` ON `challenge_participant`.`email` = `role`.`email` LEFT JOIN `challenge_participant_grades` ON `challenge_participant_grades`.`challenge_name` = `challenge_participant`.`challenge_name` AND `challenge_participant_grades`.`email` = `challenge_participant`.`email` LEFT JOIN `auto_grade_tests` ON `auto_grade_tests`.`challenge_name` = `challenge_participant_grades`.`challenge_name` AND `auto_grade_tests`.`test_number` = `challenge_participant_grades`.`test_number` WHERE `challenge`.`admin_email` = ? AND `challenge`.`challenge_name` = ? GROUP BY `challenge_participant`.`email`, `role`.`course`, `role`.`role` ORDER BY `role`.`course` ");
 			myStmt.setString(1, username);
 			myStmt.setString(2, challengeName);
 			ResultSet myResults=myStmt.executeQuery();
@@ -695,11 +745,17 @@ public class DatabaseConnector
 					{
 						if(myResults.getObject(x)!=null)
 						{
-							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+							if(!attributes.containsKey(meta.getColumnLabel(x)))
+							{
+								attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+							}
 						}
 						else
 						{
-							attributes.put(meta.getColumnLabel(x), "");
+							if(!attributes.containsKey(meta.getColumnLabel(x)))
+							{
+								attributes.put(meta.getColumnLabel(x), "");
+							}
 						}
 					}
 				}
@@ -709,6 +765,8 @@ public class DatabaseConnector
 		}
 		catch(Exception e)
 		{
+			if(verbose)
+				e.printStackTrace();
 			disconnect();
 			return null;
 		}
@@ -799,6 +857,70 @@ public class DatabaseConnector
 		{
 			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge INNER JOIN auto_grade_tests ON challenge.challenge_name = auto_grade_tests.challenge_name INNER JOIN auto_grade_args ON auto_grade_tests.challenge_name = auto_grade_args.challenge_name AND auto_grade_tests.test_number = auto_grade_args.test_number WHERE challenge.challenge_name = ? ORDER BY auto_grade_tests.test_number ASC, auto_grade_args.arg_order ASC");
 			myStmt.setString(1, challengeName);
+			ResultSet myResults=myStmt.executeQuery();
+			//disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return null;
+		}
+		disconnect();
+		return myReturn;
+	}
+	
+	/**
+	 * 
+	 * @param challengeName
+	 * @return
+	 */
+	public synchronized ArrayList getChallengeAutoGrade(String username, String challengeName)
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge INNER JOIN auto_grade_tests ON challenge.challenge_name = auto_grade_tests.challenge_name INNER JOIN auto_grade_args ON auto_grade_tests.challenge_name = auto_grade_args.challenge_name AND auto_grade_tests.test_number = auto_grade_args.test_number WHERE challenge.challenge_name = ? AND challenge.admin_email = ? ORDER BY auto_grade_tests.test_number ASC, auto_grade_args.arg_order ASC");
+			myStmt.setString(1, challengeName);
+			myStmt.setString(2, username);
 			ResultSet myResults=myStmt.executeQuery();
 			//disconnect();
 			ResultSetMetaData meta=myResults.getMetaData();
@@ -1044,8 +1166,12 @@ public class DatabaseConnector
 		ArrayList myReturn = new ArrayList();
 		try
 		{
-			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM `challenge` INNER JOIN `challenge_participant` ON `challenge`.`challenge_name` = `challenge_participant`.`challenge_name` WHERE `challenge_participant`.`challenge_name`=?");
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM `challenge` INNER JOIN `challenge_participant` ON `challenge`.`challenge_name` = `challenge_participant`.`challenge_name` LEFT JOIN `challenge_participant_grades` ON `challenge_participant`.`challenge_name` = `challenge_participant_grades`.`challenge_name` AND `challenge_participant`.`email` = `challenge_participant_grades`.`email` LEFT JOIN `auto_grade_tests` ON `challenge_participant_grades`.`challenge_name` = `auto_grade_tests`.`challenge_name` AND `challenge_participant_grades`.`test_number` = `auto_grade_tests`.`test_number` WHERE `challenge_participant`.`challenge_name`=? ORDER BY `challenge_participant_grades`.`email` ASC, `challenge_participant_grades`.`test_number` ASC");
 			myStmt.setString(1, challengeName);
+			if(verbose)
+			{
+				System.out.println(myStmt);
+			}
 			ResultSet myResults=myStmt.executeQuery();
 			//disconnect();
 			ResultSetMetaData meta=myResults.getMetaData();
@@ -1063,13 +1189,23 @@ public class DatabaseConnector
 					{
 						if(myResults.getObject(x)!=null)
 						{
-							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+							if(!attributes.containsKey(meta.getColumnLabel(x)))
+							{
+								attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+							}
 						}
 						else
 						{
-							attributes.put(meta.getColumnLabel(x), "");
+							if(!attributes.containsKey(meta.getColumnLabel(x)))
+							{
+								attributes.put(meta.getColumnLabel(x), "");
+							}
 						}
 					}
+				}
+				if(verbose)
+				{
+					System.out.println(attributes.get("email"));
 				}
 				DBObj tmp = new DBObj(attributes, false, tables);
 				myReturn.add(tmp);
@@ -1133,6 +1269,10 @@ public class DatabaseConnector
 						}
 					}
 				}
+				if(attributes.get("auto_grade").equals(true))
+				{
+					attributes.put("grading", getChallengeDefaultGrading((String)attributes.get("challenge_name"), username));
+				}
 				DBObj tmp = new DBObj(attributes, false, tables);
 				myReturn.add(tmp);
 			}
@@ -1143,6 +1283,72 @@ public class DatabaseConnector
 			return null;
 		}
 		disconnect();
+		return myReturn;
+	}
+	
+	public synchronized ArrayList getChallengeDefaultGrading(String challengeName, String username)
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		ArrayList myReturn = new ArrayList();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM auto_grade_tests_default INNER JOIN auto_grade_args_default ON auto_grade_tests_default.challenge_name = auto_grade_args_default.challenge_name AND auto_grade_tests_default.administrator = auto_grade_args_default.administrator AND auto_grade_tests_default.test_number = auto_grade_args_default.test_number WHERE auto_grade_tests_default.administrator = '' OR auto_grade_tests_default.administrator = ? AND auto_grade_tests_default.challenge_name = ? ORDER BY auto_grade_args_default.test_number ASC, auto_grade_args_default.arg_order ASC");
+			myStmt.setString(1, username);
+			myStmt.setString(2, challengeName);
+			ResultSet myResults=myStmt.executeQuery();
+			//disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			while(myResults.next())
+			{
+				if(verbose)
+				{
+					System.out.println("Got a grade result for " + challengeName + ", " + username);
+				}
+				attributes=new ConcurrentHashMap();
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+				DBObj tmp = new DBObj(attributes, false, tables);
+				myReturn.add(tmp);
+			}
+		}
+		catch(Exception e)
+		{
+			if(verbose)
+			{
+				e.printStackTrace();
+			}
+			//disconnect();
+			return null;
+		}
+		//disconnect();
 		return myReturn;
 	}
 	
@@ -1362,6 +1568,30 @@ public class DatabaseConnector
 		return true;
 	}
 	
+	public boolean updateChallenge(String prevName, String newName, String openTime, String endTime, String description, boolean autoGrade)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("UPDATE `challenge` SET `challenge_name`=?,`open_time`=?,`end_time`=?,`description`=?,`auto_grade`=? WHERE `challenge_name`=?");
+			myStmt.setString(1, newName);
+			myStmt.setString(2, openTime);
+			myStmt.setString(3, endTime);
+			myStmt.setString(4, description);
+			myStmt.setBoolean(5, autoGrade);
+			myStmt.setString(6, prevName);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return false;
+		}
+		disconnect();
+		return true;
+	}
+	
 	public boolean updateChallengeDefault(String prevName, String newName, String description)
 	{
 		getConnection();
@@ -1370,6 +1600,28 @@ public class DatabaseConnector
 			PreparedStatement myStmt = connection.prepareStatement("UPDATE `challenge_default` SET `challenge_name`=?,`description`=? WHERE `challenge_name`=?");
 			myStmt.setString(1, newName);
 			myStmt.setString(2, description);
+			myStmt.setString(3, prevName);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return false;
+		}
+		disconnect();
+		return true;
+	}
+	
+	public boolean updateChallengeDefault(String prevName, String newName, String description, boolean autoGrade)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("UPDATE `challenge_default` SET `challenge_name`=?,`description`=?,`auto_grade`=? WHERE `challenge_name`=?");
+			myStmt.setString(1, newName);
+			myStmt.setString(2, description);
+			myStmt.setObject(2, autoGrade);
 			myStmt.setString(3, prevName);
 			myStmt.execute();
 		}
@@ -1430,6 +1682,33 @@ public class DatabaseConnector
 		return true;
 	}
 	
+	public boolean createChallenge(String newName, String openTime, String endTime, String description, String email, String type, boolean autoGrade)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge`(`challenge_name`, `open_time`, `end_time`, `description`, `admin_email`, `type`, `auto_grade`) VALUES (?,?,?,?,?,?,?)");
+			myStmt.setString(1, newName);
+			myStmt.setString(2, openTime);
+			myStmt.setString(3, endTime);
+			myStmt.setString(4, description);
+			myStmt.setString(5, email);
+			myStmt.setString(6, type);
+			myStmt.setBoolean(7, autoGrade);
+			
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return false;
+		}
+		disconnect();
+		assignChallenge(newName, email);
+		return true;
+	}
+	
 	public boolean createChallengeDefault(String newName, String description, String email)
 	{
 		getConnection();
@@ -1441,6 +1720,33 @@ public class DatabaseConnector
 			//myStmt.setString(3, endTime);
 			myStmt.setString(2, description);
 			myStmt.setString(3, email);
+			//myStmt.setString(6, type);
+			
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+			return false;
+		}
+		disconnect();
+		//assignChallenge(newName, email);
+		return true;
+	}
+	
+	public boolean createChallengeDefault(String newName, String description, String email, boolean autoGrade)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge_default`(`challenge_name`, `description`, `administrator`, `auto_grade`) VALUES (?,?,?,?)");
+			myStmt.setString(1, newName);
+			//myStmt.setString(2, openTime);
+			//myStmt.setString(3, endTime);
+			myStmt.setString(2, description);
+			myStmt.setString(3, email);
+			myStmt.setObject(4, autoGrade);
 			//myStmt.setString(6, type);
 			
 			myStmt.execute();
@@ -1481,6 +1787,41 @@ public class DatabaseConnector
 			PreparedStatement myStmt = connection.prepareStatement("DELETE FROM `challenge_command_default` WHERE `challenge_name` = ? AND `administrator` = ?");
 			myStmt.setString(1, prevChallengeName);
 			myStmt.setString(2, administrator);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public void deleteTestsDefault(String prevChallengeName, String administrator)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("DELETE FROM `auto_grade_tests_default` WHERE `challenge_name` = ? AND `administrator` = ?");
+			myStmt.setString(1, prevChallengeName);
+			myStmt.setString(2, administrator);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public void deleteTests(String prevChallengeName)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("DELETE FROM `auto_grade_tests` WHERE `challenge_name` = ?");
+			myStmt.setString(1, prevChallengeName);
 			myStmt.execute();
 		}
 		catch(Exception e)
@@ -1541,6 +1882,133 @@ public class DatabaseConnector
 			myStmt.setString(3, command);
 			myStmt.setString(4, challengeName);
 			myStmt.setString(5, email);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public void addGradeDefault(String challengeName, int testNum, String numIterations, String performance, String email)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `auto_grade_tests_default`(`challenge_name`, `test_number`, `num_iterations`, `performance_multiplier`, `administrator`) VALUES (?,?,?,?,?)");
+			myStmt.setString(1, challengeName);
+			myStmt.setObject(2, testNum);
+			myStmt.setString(3, numIterations);
+			myStmt.setString(4, performance);
+			myStmt.setString(5, email);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	
+	public void addGradeTest(String challengeName, int testNum, String numIterations, String performance)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `auto_grade_tests`(`challenge_name`, `test_number`, `num_iterations`, `performance_multiplier`) VALUES (?,?,?,?)");
+			myStmt.setString(1, challengeName);
+			myStmt.setObject(2, testNum);
+			myStmt.setString(3, numIterations);
+			myStmt.setString(4, performance);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	
+	public void addGradeDefaultArg(String challengeName, int testNum, int argNum, String argType, String argVal, String email)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `auto_grade_args_default`(`challenge_name`, `test_number`, `arg_order`, `arg_type`, `arg_value`, `administrator`) VALUES (?,?,?,?,?,?)");
+			myStmt.setString(1, challengeName);
+			myStmt.setObject(2, testNum);
+			myStmt.setObject(3, argNum);
+			myStmt.setString(4, argType);
+			myStmt.setString(5, argVal);
+			myStmt.setString(6, email);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public void addGradeTestArg(String challengeName, int testNum, int argNum, String argType, String argVal)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `auto_grade_args`(`challenge_name`, `test_number`, `arg_order`, `arg_type`, `arg_value`) VALUES (?,?,?,?,?)");
+			myStmt.setString(1, challengeName);
+			myStmt.setObject(2, testNum);
+			myStmt.setObject(3, argNum);
+			myStmt.setString(4, argType);
+			myStmt.setString(5, argVal);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public void addGradeDefaultArg(String challengeName, int testNum, int argNum, String argType, String email)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `auto_grade_args_default`(`challenge_name`, `test_number`, `arg_order`, `arg_type`, `arg_value`, `administrator`) VALUES (?,?,?,?,NULL,?)");
+			myStmt.setString(1, challengeName);
+			myStmt.setObject(2, testNum);
+			myStmt.setObject(3, argNum);
+			myStmt.setString(4, argType);
+			myStmt.setString(5, email);
+			myStmt.execute();
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			e.printStackTrace();
+		}
+		disconnect();
+	}
+	
+	public void addGradeTestArg(String challengeName, int testNum, int argNum, String argType)
+	{
+		getConnection();
+		try
+		{
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `auto_grade_args`(`challenge_name`, `test_number`, `arg_order`, `arg_type`, `arg_value`) VALUES (?,?,?,?,NULL)");
+			myStmt.setString(1, challengeName);
+			myStmt.setObject(2, testNum);
+			myStmt.setObject(3, argNum);
+			myStmt.setString(4, argType);
 			myStmt.execute();
 		}
 		catch(Exception e)

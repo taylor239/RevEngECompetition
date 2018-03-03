@@ -62,6 +62,8 @@ public class InstallScriptServlet extends HttpServlet {
 		String serverName = "revenge.cs.arizona.edu";
 		String port = "80";
 		
+		String mariaPassword = "LFgVMrQ8rqR41StN";
+		
 		String output = "#!/bin/bash" 
 		+ "\nclear" 
 		+ "\n" 
@@ -99,7 +101,7 @@ public class InstallScriptServlet extends HttpServlet {
 		+ "\nmkdir -p /opt/dataCollector/" 
 		+ "\n\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/dataCollection.sql -O /opt/dataCollector/dataCollection.sql"
 		+ "\n\nmariadb -u root < /opt/dataCollector/dataCollection.sql"
-		+ "\nmariadb -u root -e \"CREATE USER 'dataCollector'@'localhost' IDENTIFIED BY 'uBgiDDGhndviQeEZ';\""
+		+ "\nmariadb -u root -e \"CREATE USER 'dataCollector'@'localhost' IDENTIFIED BY '" + mariaPassword + "';\""
 		+ "\nmariadb -u root -e \"GRANT USAGE ON *.* TO 'dataCollector'@'localhost' REQUIRE NONE WITH MAX_QUERIES_PER_HOUR 0 MAX_CONNECTIONS_PER_HOUR 0 MAX_UPDATES_PER_HOUR 0 MAX_USER_CONNECTIONS 0;\""
 		+ "\nmariadb -u root -e \"GRANT ALL PRIVILEGES ON dataCollection.* TO 'dataCollector'@'localhost';\""
 		+ "\n"
@@ -120,7 +122,7 @@ public class InstallScriptServlet extends HttpServlet {
 		+ "\nservice mysql start" 
 		+ "\nservice tomcat8 start"
 		+ "\npkill -f \"/usr/bin/java -jar /opt/dataCollector/DataCollector.jar\"" 
-		+ "\n/usr/bin/java -Xmx1536m -jar /opt/dataCollector/DataCollector.jar -user " + curEmail + " -server " + serverName + ":" + port + " >> /opt/dataCollector/log.log 2>&1" 
+		+ "\n/usr/bin/java -Xmx1536m -jar /opt/dataCollector/DataCollector.jar -user " + curEmail + " -server " + serverName + ":" + port + " -databasePassword " + mariaPassword + " -event RevEngE >> /opt/dataCollector/log.log 2>&1" 
 		+ "\necho \"Got a crash: $(date)\" >> /opt/dataCollector/log.log" 
 		+ "\nsleep 2" 
 		+ "\ndone" 

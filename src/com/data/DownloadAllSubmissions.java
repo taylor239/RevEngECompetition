@@ -84,29 +84,30 @@ public class DownloadAllSubmissions extends HttpServlet
 		ServletOutputStream out=response.getOutputStream();
 		
 		ZipOutputStream zipOut = new ZipOutputStream(out);
+		Object previousID = "";
+		
 		
 		for(int x=0; x<myChallengesFull.size(); x++)
 		{
+			DBObj submission = (DBObj) myChallengesFull.get(x);
+			System.out.println(submission.getAttribute("email"));
+			if(submission.getAttribute("email").equals(previousID))
+			{
+				continue;
+			}
+			
+			
+			previousID = submission.getAttribute("email");
+			
+			
 			ByteArrayOutputStream byteOut = new ByteArrayOutputStream();
 			ZipOutputStream nestedZipOut = new ZipOutputStream(byteOut);
 			
-			DBObj submission = (DBObj) myChallengesFull.get(x);
+			
 			
 			//System.out.println(submission.getAttributes());
 			
-			if((Boolean)submission.getAttribute("auto_grade"))
-			{
-				ZipEntry autoGrade = new ZipEntry("auto_grades.txt");
-				nestedZipOut.putNextEntry(autoGrade);
-				byte[] autoGradeData = null;
-				String gradeOutput = "";
-				gradeOutput += "Validation Tests Passed:\n" + submission.getAttribute("auto_grade_score") + "\n";
-				gradeOutput += "Total Validation Tests:\n" + submission.getAttribute("num_grading_iterations");
-				autoGradeData = gradeOutput.getBytes();
-				
-				nestedZipOut.write(autoGradeData);
-				nestedZipOut.closeEntry();
-			}
+			
 			
 			ZipEntry originalFile = new ZipEntry("original.c");
 			nestedZipOut.putNextEntry(originalFile);
@@ -164,6 +165,96 @@ public class DownloadAllSubmissions extends HttpServlet
 			}
 			nestedZipOut.write(writeupOut);
 			nestedZipOut.closeEntry();
+			
+			
+			if((Boolean)submission.getAttribute("auto_grade"))
+			{
+				ZipEntry autoGrade = new ZipEntry("auto_grades.txt");
+				nestedZipOut.putNextEntry(autoGrade);
+				byte[] autoGradeData = null;
+				String gradeOutput = "";
+				
+				if(submission.getAttribute("test_number") == null || submission.getAttribute("test_number").equals(""))
+				{
+					gradeOutput += "Not yet submitted";
+				}
+				else
+				{
+					gradeOutput += "Test Number: " + submission.getAttribute("test_number") + "\n";
+					gradeOutput += "Passed: " + submission.getAttribute("iterations_passed") + "/" + submission.getAttribute("num_iterations") + "\n";
+					if(submission.getAttribute("in_progress").equals(true))
+					{
+						gradeOutput += "Test still in progress";
+					}
+					else if(submission.getAttribute("iterations_passed").equals(submission.getAttribute("num_iterations")))
+					{
+						gradeOutput += "Test passed!\n";
+					}
+					else
+					{
+						gradeOutput += "Failed on: ";
+						if(submission.getAttribute("correct").equals(false))
+						{
+							gradeOutput += "correctness";
+							if(submission.getAttribute("performance").equals(false))
+							{
+								gradeOutput += " and performance";
+							}
+						}
+						else if(submission.getAttribute("performance").equals(false))
+						{
+							gradeOutput += " performance";
+						}
+						gradeOutput += "\n";
+					}
+					
+					for(int y = x + 1; y<myChallengesFull.size(); y++)
+					{
+						DBObj nextSubmission = (DBObj) myChallengesFull.get(y);
+						if(!nextSubmission.getAttribute("email").equals(submission.getAttribute("email")))
+						{
+							//x = y;
+							break;
+						}
+						
+						
+						gradeOutput += "Test Number: " + nextSubmission.getAttribute("test_number") + "\n";
+						gradeOutput += "Passed: " + nextSubmission.getAttribute("iterations_passed") + "/" + nextSubmission.getAttribute("num_iterations") + "\n";
+						if(nextSubmission.getAttribute("in_progress").equals(true))
+						{
+							gradeOutput += "Test still in progress";
+						}
+						else if(nextSubmission.getAttribute("iterations_passed").equals(nextSubmission.getAttribute("num_iterations")))
+						{
+							gradeOutput += "Test passed!\n";
+						}
+						else
+						{
+							gradeOutput += "Failed on: ";
+							if(nextSubmission.getAttribute("correct").equals(false))
+							{
+								gradeOutput += "correctness";
+								if(nextSubmission.getAttribute("performance").equals(false))
+								{
+									gradeOutput += " and performance";
+								}
+							}
+							else if(nextSubmission.getAttribute("performance").equals(false))
+							{
+								gradeOutput += " performance";
+							}
+							gradeOutput += "\n";
+						}
+					}
+				}
+				
+				//gradeOutput += "Validation Tests Passed:\n" + submission.getAttribute("auto_grade_score") + "\n";
+				//gradeOutput += "Total Validation Tests:\n" + submission.getAttribute("num_grading_iterations");
+				autoGradeData = gradeOutput.getBytes();
+				
+				nestedZipOut.write(autoGradeData);
+				nestedZipOut.closeEntry();
+			}
 			
 			nestedZipOut.close();
 			byteOut.close();

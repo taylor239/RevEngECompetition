@@ -89,6 +89,9 @@
         	String description = (String)request.getParameter("description");
         	int numCommands = new Integer((String)request.getParameter("totalAdd"));
         	
+        	int numTests = new Integer((String)request.getParameter("numTests"));
+        	boolean autoGrade = numTests >= 0;
+        	
         	if(verbose)
         	{
         		System.out.println("Prev challenge: " + prevChallenge);
@@ -99,10 +102,11 @@
         	if(prevChallenge != null)
         	{
         		isNew = false;
-        		success = myConnector.updateChallenge(prevChallenge, challengeName, openTime, endTime, description);
+        		success = myConnector.updateChallenge(prevChallenge, challengeName, openTime, endTime, description, autoGrade);
         		if(success)
         		{
         			myConnector.deleteCommands(challengeName);
+        			myConnector.deleteTests(challengeName);
         		}
         		if(!success)
             	{
@@ -118,7 +122,7 @@
         	{
         		if(newType.equals("assignment"))
         		{
-	        		success = myConnector.createChallenge(challengeName, openTime, endTime, description, (String)myUser.getAttribute("email"), newType);
+	        		success = myConnector.createChallenge(challengeName, openTime, endTime, description, (String)myUser.getAttribute("email"), newType, autoGrade);
 	        		if(!success)
 	            	{
 	            		refreshChallenge = "Failed to create challenge.";
@@ -130,7 +134,7 @@
         		}
         		else if(newType.equals("challenge"))
         		{
-        			success = myConnector.createChallengeDefault(challengeName, description, (String)myUser.getAttribute("email"));
+        			//success = myConnector.createChallengeDefault(challengeName, description, (String)myUser.getAttribute("email"));
         			if(!success)
                 	{
                 		refreshChallenge = "Failed to create challenge.";
@@ -157,6 +161,32 @@
 	        		myConnector.addCommand(commandOrder, commandName, command, challengeName);
 	        	}
 	        	
+	        	
+	        	for(int x=0; success && x<=numTests; x++)
+	        	{
+	        		String testOrder = (String)request.getParameter("test_order_" + x);
+	        		String numIterations = (String)request.getParameter("testIterations_" + x);
+	        		String performance = (String)request.getParameter("testPerformance_" + x);
+	        		int numArguments = new Integer((String)request.getParameter("testArguments_" + x));
+	        		
+	        		myConnector.addGradeTest(challengeName, x, numIterations, performance);
+	        		
+	        		
+	        		for(int y=0; y<=numArguments; y++)
+	        		{
+	        			String curType = (String)request.getParameter("argType_" + x + "_" + y);
+	        			if(curType.equals("literal"))
+	        			{
+	        				String curValue = (String)request.getParameter("argValue_" + x + "_" + y);
+	        				myConnector.addGradeTestArg(challengeName, x, y, curType, curValue);
+	        			}
+	        			else
+	        			{
+	        				myConnector.addGradeTestArg(challengeName, x, y, curType);
+	        			}
+	        		}
+	        		
+	        	}
 	        	
 		        myChallengesFull = myConnector.getChallenge(challengeName, (String)myUser.getAttribute("email"));
 		        challengeAssignment = myConnector.getChallengeAssignment((String)myUser.getAttribute("email"), challengeName);

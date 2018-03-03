@@ -184,7 +184,31 @@
         for(int x=0; x<keys.size(); x++)
         {
         	String tmp=(String)keys.get(x);
-        	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("type") || tmp.equals("grade") || tmp.equals("admin_email") || tmp.equals("gradingFile") || tmp.equals("auto_grade") || (!graded && tmp.equals("num_grading_iterations")) || (!graded && tmp.equals("auto_grade_score")) || tmp.equals("codeGeneratedTime"))
+        	if(tmp.equals("email")
+        			|| tmp.equals("code_generated")
+        			|| tmp.equals("end_time")
+        			|| tmp.equals("open_time")
+        			|| tmp.equals("description")
+        			|| tmp.equals("originalFile")
+        			|| tmp.equals("obfuscatedFile")
+        			|| tmp.equals("submittedFile")
+        			|| tmp.equals("submissionTime")
+        			|| tmp.equals("submittedWrittenFile")
+        			|| tmp.equals("type")
+        			|| tmp.equals("grade")
+        			|| tmp.equals("admin_email")
+        			|| tmp.equals("gradingFile")
+        			|| tmp.equals("auto_grade")
+        			|| (!graded && tmp.equals("num_grading_iterations"))
+        			|| (!graded && tmp.equals("auto_grade_score"))
+        			|| tmp.equals("codeGeneratedTime")
+        			|| tmp.equals("correct")
+        			|| tmp.equals("in_progress")
+        			|| tmp.equals("performance")
+        			|| tmp.equals("iterations_passed")
+        			|| tmp.equals("test_number")
+        			|| tmp.equals("num_iterations")
+        			|| tmp.equals("performance_multiplier"))
         	{
         		keys.remove(x);
         		x--;
@@ -264,10 +288,133 @@
 	        		{
 	        			lastSubmission = "You submitted last on: " + ((DBObj)myChallenges.get(x)).getAttribute("submissionTime");
 	        		}
-	        		String totalTests = "" + ((DBObj)myChallenges.get(x)).getAttribute("num_grading_iterations");
-	        		String passedTests = "" + ((DBObj)myChallenges.get(x)).getAttribute("auto_grade_score");
+	        		//String totalTests = "" + ((DBObj)myChallenges.get(x)).getAttribute("num_grading_iterations");
+	        		//String passedTests = "" + ((DBObj)myChallenges.get(x)).getAttribute("auto_grade_score");
 	        		%>
-	        		var message_<%=x %> = '<table width="100%"><tr width="100%"><td width="100%" style="vertical-align:bottom;">Assignment Instructions:</td></tr><tr><td style=\"vertical-align:top;\"><table style=\"width:100%;\"><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\"><%=((DBObj)myChallenges.get(x)).getAttribute("description") %></td></tr><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\"><%=lastSubmission %></td></tr><% if(isGraded){ %><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\">Validation Tests Run: <%=totalTests %></tr></td><tr><td style=\"font-size:medium; font-weight:normal; text-align:left;\">Validation Tests Passed: <%=passedTests %></tr></td><% } %></table></td></tr></table>';
+	        		var message_<%=x %> = '<table width="100%"><tr width="100%"><td colspan="2" width="100%" style="vertical-align:bottom;">Assignment Instructions:</td></tr><tr><td colspan="2" style="vertical-align:top;"><table style="width:100%;"><tr><td style="font-size:medium; font-weight:normal; text-align:left;"><%=((DBObj)myChallenges.get(x)).getAttribute("description") %></td></tr><tr><td colspan="2" style="font-size:medium; font-weight:normal; text-align:left;"><%=lastSubmission %></td></tr>' + <%
+						        		
+	        		if(isGraded)
+	        		{
+	        			Object testNums = ((DBObj)myChallenges.get(x)).getAttribute("test_number");
+	        			if(testNums != null && testNums instanceof ArrayList)
+	        			{
+	        				ArrayList testArray = (ArrayList)testNums;
+	        				Object passedArray = ((DBObj)myChallenges.get(x)).getAttribute("iterations_passed");
+	        				Object correctArray = ((DBObj)myChallenges.get(x)).getAttribute("correct");
+	        				Object performanceArray = ((DBObj)myChallenges.get(x)).getAttribute("performance");
+	        				Object inProgressArray = ((DBObj)myChallenges.get(x)).getAttribute("in_progress");
+	        				Object numIterations = ((DBObj)myChallenges.get(x)).getAttribute("num_iterations");
+	        				Object performanceMultiplier = ((DBObj)myChallenges.get(x)).getAttribute("performance_multiplier");
+	        				
+	        				if(!(passedArray instanceof ArrayList))
+	        				{
+	        					ArrayList newArray = new ArrayList();
+	        					for(int z=0; z<testArray.size(); z++)
+	        					{
+	        						newArray.add(passedArray);
+	        					}
+	        					passedArray = newArray;
+	        				}
+	        				
+	        				if(!(correctArray instanceof ArrayList))
+	        				{
+	        					ArrayList newArray = new ArrayList();
+	        					for(int z=0; z<testArray.size(); z++)
+	        					{
+	        						newArray.add(correctArray);
+	        					}
+	        					correctArray = newArray;
+	        				}
+	        				
+	        				if(!(performanceArray instanceof ArrayList))
+	        				{
+	        					ArrayList newArray = new ArrayList();
+	        					for(int z=0; z<testArray.size(); z++)
+	        					{
+	        						newArray.add(performanceArray);
+	        					}
+	        					performanceArray = newArray;
+	        				}
+	        				
+	        				if(!(inProgressArray instanceof ArrayList))
+	        				{
+	        					ArrayList newArray = new ArrayList();
+	        					for(int z=0; z<testArray.size(); z++)
+	        					{
+	        						newArray.add(inProgressArray);
+	        					}
+	        					inProgressArray = newArray;
+	        				}
+	        				
+	        				if(!(numIterations instanceof ArrayList))
+	        				{
+	        					ArrayList newArray = new ArrayList();
+	        					for(int z=0; z<testArray.size(); z++)
+	        					{
+	        						newArray.add(numIterations);
+	        					}
+	        					numIterations = newArray;
+	        				}
+	        				
+	        				if(!(performanceMultiplier instanceof ArrayList))
+	        				{
+	        					ArrayList newArray = new ArrayList();
+	        					for(int z=0; z<testArray.size(); z++)
+	        					{
+	        						newArray.add(performanceMultiplier);
+	        					}
+	        					performanceMultiplier = newArray;
+	        				}
+	        				
+	        				//System.out.println(testArray);
+	        				//System.out.println(performanceMultiplier);
+	        				
+	        				for(int z=0; z<testArray.size(); z++)
+	        				{
+	        					String styleAppend = "";
+	        					if((boolean)(((ArrayList)inProgressArray).get(z)))
+	        					{
+	        						styleAppend += "color: orange;";
+	        					}
+	        					else if(!((ArrayList)passedArray).get(z).equals(((ArrayList)numIterations).get(z)))
+	        					{
+	        						styleAppend += "color: red;";
+	        					}
+	        					else
+	        					{
+	        						styleAppend += "color: green;";
+	        					}
+	        				%>
+	    	        		'<tr><td width="25%" style="font-size:medium; font-weight:normal; text-align:left; <%=styleAppend %>">Test Number: <%=testArray.get(z) %></td><td width=\"75%\" style=\"font-size:medium; font-weight:normal; text-align:left;  <%=styleAppend %>\">Iterations Passed: <%=((ArrayList)passedArray).get(z) %>/<%=((ArrayList)numIterations).get(z) %>' +
+	    	        		<%
+	    	        		if(!((ArrayList)passedArray).get(z).equals(((ArrayList)numIterations).get(z)))
+	    	        		{
+	    	        			String failCause = "";
+	    	        			if(!(boolean)(((ArrayList)correctArray).get(z)))
+	    	        			{
+	    	        				failCause += "Correctness";
+	    	        				if(!(boolean)(((ArrayList)performanceArray).get(z)))
+	    	        				{
+	    	        					failCause += " and performance";
+	    	        				}
+	    	        			}
+	    	        			else if(!(boolean)(((ArrayList)performanceArray).get(z)))
+    	        				{
+    	        					failCause += "Performance";
+    	        				}
+	    	        			%>'</tr></td><tr><td colspan="2" style="font-size:medium; font-weight:normal; text-align:left;  <%=styleAppend %>">Failed On: <%=failCause %>' +<%
+	    	        		}
+	    	        		if((boolean)(((ArrayList)inProgressArray).get(z)))
+        					{
+	    	        			%>'</tr></td><tr><td colspan="2" style="font-size:medium; font-weight:normal; text-align:left;  <%=styleAppend %>">Grading currently in progress; refresh for update.' +<%
+        					}
+	    	        		%>
+	    	        		'</tr></td>' +
+	    	        		<%
+	        				}
+	        			}
+	        		}
+	        		%>'</table></td></tr></table>';
 	        		</script>
 	        		<a onclick="showMessageBox(message_<%=x %>)">
 	        		<%
@@ -352,7 +499,31 @@
             for(int x=0; x<keys.size(); x++)
             {
             	String tmp=(String)keys.get(x);
-            	if(tmp.equals("email") || tmp.equals("code_generated") || tmp.equals("end_time") || tmp.equals("open_time") || tmp.equals("description") || tmp.equals("originalFile") || tmp.equals("obfuscatedFile") || tmp.equals("submittedFile") || tmp.equals("submissionTime") || tmp.equals("submittedWrittenFile") || tmp.equals("gradingFile") || tmp.equals("auto_grade") || (!graded && tmp.equals("num_grading_iterations")) || (!graded && tmp.equals("auto_grade_score")) || tmp.equals("codeGeneratedTime"))
+            	if(tmp.equals("email")
+            			|| tmp.equals("code_generated")
+            			|| tmp.equals("end_time")
+            			|| tmp.equals("open_time")
+            			|| tmp.equals("description")
+            			|| tmp.equals("originalFile")
+            			|| tmp.equals("obfuscatedFile")
+            			|| tmp.equals("submittedFile")
+            			|| tmp.equals("submissionTime")
+            			|| tmp.equals("submittedWrittenFile")
+            			|| tmp.equals("type")
+            			|| tmp.equals("grade")
+            			|| tmp.equals("admin_email")
+            			|| tmp.equals("gradingFile")
+            			|| tmp.equals("auto_grade")
+            			|| (!graded && tmp.equals("num_grading_iterations"))
+            			|| (!graded && tmp.equals("auto_grade_score"))
+            			|| tmp.equals("codeGeneratedTime")
+            			|| tmp.equals("correct")
+            			|| tmp.equals("in_progress")
+            			|| tmp.equals("performance")
+            			|| tmp.equals("iterations_passed")
+            			|| tmp.equals("test_number")
+            			|| tmp.equals("num_iterations")
+            			|| tmp.equals("performance_multiplier"))
             	{
             		keys.remove(x);
             		x--;
