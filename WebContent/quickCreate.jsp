@@ -107,6 +107,11 @@
         <textarea rows="10" form="updateForm" style="width:100%" onfocus="clearText(this);" name="description">Instructions for students</textarea>
         </td>
         </tr>
+        <tr>
+        <td width="100%" colspan="2">
+        <input form="updateForm" form="updateForm" style="width:100%" onfocus="clearText(this);" type="text" name="seed" value="Seed (0 for random)"></input>
+        </td>
+        </tr>
         <script>
         totalCommands = <%=selectedDefault.size() %>;
         </script>

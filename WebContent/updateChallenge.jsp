@@ -78,6 +78,13 @@
         	String newType = "assignment";
         	newType = (String)request.getParameter("new_type");
         	
+        	String seed = (String)request.getParameter("seed");
+        	boolean randomSeed = false;
+        	if(seed.equals("0"))
+        	{
+        		randomSeed = true;
+        	}
+        	
         	String prevChallenge = null;
         	prevChallenge = (String)request.getParameter("prev_challenge_name");
         	
@@ -102,7 +109,7 @@
         	if(prevChallenge != null)
         	{
         		isNew = false;
-        		success = myConnector.updateChallenge(prevChallenge, challengeName, openTime, endTime, description, autoGrade);
+        		success = myConnector.updateChallenge(prevChallenge, challengeName, openTime, endTime, description, autoGrade, randomSeed, seed);
         		if(success)
         		{
         			myConnector.deleteCommands(challengeName);
@@ -122,7 +129,7 @@
         	{
         		if(newType.equals("assignment"))
         		{
-	        		success = myConnector.createChallenge(challengeName, openTime, endTime, description, (String)myUser.getAttribute("email"), newType, autoGrade);
+	        		success = myConnector.createChallenge(challengeName, openTime, endTime, description, (String)myUser.getAttribute("email"), newType, autoGrade, randomSeed, seed);
 	        		if(!success)
 	            	{
 	            		refreshChallenge = "Failed to create challenge.";

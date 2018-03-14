@@ -104,7 +104,8 @@
             			|| tmp.equals("changeURL")
             			|| tmp.equals("currentVisit")
             			|| tmp.equals("lastLogon")
-            			|| tmp.equals("previousVisit"))
+            			|| tmp.equals("previousVisit")
+            			|| tmp.equals("downloadedDataCollection"))
             	{
             		keys.remove(x);
             		x--;

@@ -208,7 +208,10 @@
         			|| tmp.equals("iterations_passed")
         			|| tmp.equals("test_number")
         			|| tmp.equals("num_iterations")
-        			|| tmp.equals("performance_multiplier"))
+        			|| tmp.equals("performance_multiplier")
+        			|| tmp.equals("seed")
+        			|| tmp.equals("randomSeed")
+        			|| tmp.equals("participantSeed"))
         	{
         		keys.remove(x);
         		x--;
@@ -523,7 +526,10 @@
             			|| tmp.equals("iterations_passed")
             			|| tmp.equals("test_number")
             			|| tmp.equals("num_iterations")
-            			|| tmp.equals("performance_multiplier"))
+            			|| tmp.equals("performance_multiplier")
+            			|| tmp.equals("seed")
+            			|| tmp.equals("randomSeed")
+            			|| tmp.equals("participantSeed"))
             	{
             		keys.remove(x);
             		x--;

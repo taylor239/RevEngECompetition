@@ -126,6 +126,7 @@
         %>
         <%
         DBObj challengeHead = (DBObj)myChallengesFull.get(0);
+        ArrayList headGrading = (ArrayList)challengeHead.getAttribute("grading");
         //boolean detailed = true;
         //if((((DBObj)myChallengesFull.get(0)).getAttribute("type")).equals("assignment"))
         //{
@@ -397,6 +398,363 @@
         </table>
         </td>
         </tr>
+        
+        <tr>
+        <td colspan="2">
+        	<table class="news_item_table" id="test_table" width="100%">
+        	<tr>
+        	<td colspan="2">
+        	<div align="center">
+        	<b>
+        	Auto Grade
+        	</b>
+        	</div>
+        	</td>
+        	</tr>
+        	<tr>
+        	<td>
+        	Test Cases:
+        	<%
+        	System.out.println("Grading tests:");
+        	
+        	int numTests = 0;
+        	
+        	for(int x=0; x<headGrading.size(); x++)
+        	{
+        		System.out.println("Grading test");
+        		DBObj curTest = (DBObj)headGrading.get(x);
+        		//System.out.println(curTest.getAttributeNames());
+        		System.out.println(curTest.getAttributes());
+				int numArgs = 0;
+	        	
+	        	
+	        	while(x + numArgs < headGrading.size())
+	        	{
+	        		DBObj tmpTest = (DBObj)headGrading.get(x + numArgs);
+	        		
+	        		if(!tmpTest.getAttribute("test_number").equals(curTest.getAttribute("test_number")))
+	        		{
+	        			break;
+	        		}
+	        		
+	        		numArgs++;
+	        	}
+	        	
+	        	numArgs--;
+	        	
+	        	System.out.println("Args: " + numArgs);
+	        	
+	        	x += numArgs;
+	        	numTests++;
+        	}
+        	numTests--;
+        	%>
+        	<input form="updateForm" type="hidden" id="num_tests" name="num_tests" value="<%=numTests %>"></input>
+        	</td>
+        	<td>
+        	<div align="right">
+        	<script>
+        	document.getElementById("num_tests").value = <%=numTests %>;
+        	function addCase(element)
+        	{
+        		var curNum = document.getElementById("num_tests").value;
+        		curNum++;
+        		document.getElementById("num_tests").value = curNum;
+        		var curTable = document.getElementById("test_table");
+        		var newElement = document.createElement("tr");
+        		var toAppend = '' +
+        		'<td colspan="3" width="100%">' +
+        		'<table id="test_table_' + curNum + '" width="100%">' +
+	        	'<tr>' +
+	        	'<td colspan="2">' +
+	        	'<table width="100%" id="test_' + curNum + '">' +
+	        	'<tr>' +
+	        	'<td colspan="3">' +
+	        	'<b>Test ' + curNum + '</b>' +
+	        	'</td>' +
+	        	'</tr>' +
+	        	'<tr>' +
+	        	'<td width="25%">' +
+	        	'Number of iterations:' +
+	        	'</td>' +
+	        	'<td colspan="2" width="75%">' +
+	        	'<div align="right">' +
+	        	'<input form="updateForm" style="" type="text" name="iterations_' + curNum + '" value="1"></input>' +
+	        	'<input form="updateForm" type="hidden" name="num_args_' + curNum + '" id="num_args_' + curNum + '" value="0"></input>' +
+	        	'</div>' +
+	        	'</td>' +
+	        	'</tr>' +
+	        	'<tr>' +
+	        	'<td width="25%">' +
+	        	'Performance cutoff:' +
+	        	'</td>' +
+	        	'<td colspan="2" width="75%">' +
+	        	'<div align="right">' +
+	        	'<input form="updateForm" style="" type="text" name="performance_' + curNum + '" value="2.0"></input>' +
+	        	'</div>' +
+	        	'</td>' +
+	        	'</tr>' +
+	        	'<tr>' +
+	        	'<td width="25%">' +
+	        	'Arguments:' +
+	        	'</td>' +
+	        	'<td width="75%" colspan="2">' +
+	        	'<div align="right">' +
+	        	'<img src="plus.png" style="margin-right: 1em;" class="boxedChar" onclick="addCaseArg(this, ' + curNum + ')" />' +
+	        	'<img src="minus.png" class="boxedChar" onclick="subtractCaseArg(this, ' + curNum + ')" />' +
+	        	'</div>' +
+	        	'</td>' +
+	        	'</tr>' +
+	        	'<tr>' +
+	        	'<td colspan="3" width="100%" id="test_arg_row_' + curNum + '">' +
+	        	'<div>' +
+	        	'<table id="test_arg_table_' + curNum + '_0" width="100%">' +
+	        	'<tr>' +
+	        	'<td width="25%">' +
+	        	'0' +
+	        	'</td>' +
+	        	'<td width="37.5">' +
+	        	'<div align="right">' +
+	        	'Type:' +
+	        	'<select name="arg_type_' + curNum + '_0" onchange="argTypeChange(this,' + curNum + ',0);" form="updateForm">' +
+	        	'<option value="literal">Literal</option>' +
+	        	'<option value="int">Integer</option>' +
+	        	'<option value="long">Long</option>' +
+	        	'</select>' +
+	        	'</div>' +
+	        	'</td>' +
+	        	'<td width="37.5">' +
+	        	'<div align="right">' +
+	        	'<input form="updateForm" style="" type="text" id="arg_value_' + curNum + '_' + 0 + '" name="arg_value_' + curNum + '_0" value="Value"></input>' +
+	        	'</div>' +
+	        	'</td>' +
+	        	'</tr>' +
+	        	'</table>' +
+	        	'</div>' +
+	        	'</td>' +
+	        	'</tr>' +
+	        	'</table>' +
+	        	'</td>' +
+	        	'</tr>' +
+	        	'</table>' +
+	        	'</td>' +
+	        	'';
+        		newElement.width="100%"
+    	        newElement.innerHTML += toAppend;
+            	curTable.appendChild(newElement);
+        	}
+        	function subtractCase(element)
+        	{
+        		var curNum = document.getElementById("num_tests").value;
+        		if(curNum == -1)
+        		{
+        			return;
+        		}
+        		var toRemove = document.getElementById("test_table_" + curNum);
+        		toRemove.remove();
+        		curNum--;
+        		document.getElementById("num_tests").value = curNum;
+        	}
+        	function addCaseArg(element, testNum)
+        	{
+        		var curNum = document.getElementById("num_args_" + testNum).value;
+        		curNum++;
+        		document.getElementById("num_args_" + testNum).value = curNum;
+        		var curTable = document.getElementById("test_arg_row_" + testNum);
+        		var newElement = document.createElement("div");
+        		var toAppend = '<table id="test_arg_table_' + testNum + '_' + curNum + '" width="100%">' +
+	        	'<tr>' +
+	        	'<td width="25%">' +
+	        	curNum +
+	        	'</td>' +
+	        	'<td width="37.5">' +
+	        	'<div align="right">' +
+	        	'Type:' +
+	        	'<select name="arg_type_' + testNum + '_' + curNum + '" onchange="argTypeChange(this,' + testNum + ',' + curNum + ');" form="updateForm">' +
+	        	'<option value="literal">Literal</option>' +
+	        	'<option value="int">Integer</option>' +
+	        	'<option value="long">Long</option>' +
+	        	'</select>' +
+	        	'</div>' +
+	        	'</td>' +
+	        	'<td width="37.5">' +
+	        	'<div align="right">' +
+	        	'<input form="updateForm" style="" type="text" id="arg_value_' + testNum + '_' + curNum + '" name="arg_value_' + testNum + '_' + curNum + '" value="Value"></input>' +
+	        	'</div>' +
+	        	'</td>' +
+	        	'</tr>' +
+	        	'</table>';
+	        	newElement.width="100%"
+	        	newElement.innerHTML += toAppend;
+        		curTable.appendChild(newElement);
+        	}
+        	function subtractCaseArg(element, testNum)
+        	{
+        		var curNum = document.getElementById("num_args_" + testNum).value;
+        		if(curNum == 0)
+        		{
+        			return;
+        		}
+        		var toRemove = document.getElementById("test_arg_table_" + testNum + "_" + curNum);
+        		toRemove.parentElement.remove();
+        		curNum--;
+        		document.getElementById("num_args_" + testNum).value = curNum;
+        	}
+        	function argTypeChange(element, testNum, argNum)
+        	{
+        		var curSelected = element.value;
+        		var textField = document.getElementById("arg_value_" + testNum + '_' + argNum);
+        		if(curSelected == "literal")
+        		{
+        			textField.value = "Value";
+        			textField.disabled = false;
+        		}
+        		else
+        		{
+        			textField.value = "";
+        			textField.disabled = true;
+        		}
+        	}
+	        </script>
+        	<img src="plus.png" style="margin-right: 1em;" class="boxedChar" onclick="addCase(this)" />
+        	<img src="minus.png" class="boxedChar" onclick="subtractCase(this)" />
+        	</div>
+        	</td>
+        	</tr>
+        	<%
+        	System.out.println("Grading tests:");
+        	for(int x=0; x<headGrading.size(); x++)
+        	{
+        		DBObj curTest = (DBObj)headGrading.get(x);
+        		System.out.println(curTest.getAttributes());
+        	}
+        	for(int x=0; x<headGrading.size(); x++)
+        	{
+        		System.out.println("Grading test");
+        		DBObj curTest = (DBObj)headGrading.get(x);
+        		//System.out.println(curTest.getAttributeNames());
+        		System.out.println(curTest.getAttributes());
+        	%>
+        		<tr>
+        		<td colspan="3" width="100%">
+        		<table id="test_table_<%=x %>" width="100%">
+	        	<tr>
+	        	<td colspan="2">
+	        	<table width="100%" id="test_<%=x %>">
+	        	<tr>
+	        	<td colspan="3">
+	        	<b>Test <%=x %></b>
+	        	</td>
+	        	</tr>
+	        	<tr>
+	        	<td width="25%">
+	        	Number of iterations:
+	        	</td>
+	        	<td colspan="2" width="75%">
+	        	<div align="right">
+	        	<input form="updateForm" style="" type="text" name="iterations_<%=x %>" value="<%=curTest.getAttribute("num_iterations") %>"></input>
+	        	<%
+	        	int numArgs = 0;
+	        	
+	        	
+	        	while(x + numArgs < headGrading.size())
+	        	{
+	        		DBObj tmpTest = (DBObj)headGrading.get(x + numArgs);
+	        		
+	        		if(!tmpTest.getAttribute("test_number").equals(curTest.getAttribute("test_number")))
+	        		{
+	        			break;
+	        		}
+	        		
+	        		numArgs++;
+	        	}
+	        	
+	        	numArgs--;
+	        	
+	        	System.out.println("Args: " + numArgs);
+	        	%>
+	        	<input form="updateForm" type="hidden" name="num_args_<%=x %>" id="num_args_<%=x %>" value="<%=numArgs %>"></input>
+	        	<script>
+	        	document.getElementById("num_args_<%=x %>").value = <%=numArgs %>;
+	        	</script>
+	        	</div>
+	        	</td>
+	        	</tr>
+	        	<tr>
+	        	<td width="25%">
+	        	Performance cutoff:
+	        	</td>
+	        	<td colspan="2" width="75%">
+	        	<div align="right">
+	        	<input form="updateForm" style="" type="text" name="performance_<%=x %>" value="<%=curTest.getAttribute("performance_multiplier") %>"></input>
+	        	</div>
+	        	</td>
+	        	</tr>
+	        	<tr>
+	        	<td width="25%">
+	        	Arguments:
+	        	</td>
+	        	<td width="75%" colspan="2">
+	        	<div align="right">
+	        	<img src="plus.png" style="margin-right: 1em;" class="boxedChar" onclick="addCaseArg(this, <%=x %>)" />
+	        	<img src="minus.png" class="boxedChar" onclick="subtractCaseArg(this, <%=x %>)" />
+	        	</div>
+	        	</td>
+	        	</tr>
+	        	<tr>
+	        	<td colspan="3" width="100%" id="test_arg_row_<%=x %>">
+				<%
+				for(int y=0; y<=numArgs; y++)
+				{
+					DBObj curArg = (DBObj)headGrading.get(x + y);
+				%>
+				<div width="100%">
+	        	<table id="test_arg_table_<%=x %>_<%=y %>" width="100%">
+	        	<tr>
+	        	<td width="25%">
+	        	<%=y %>
+	        	</td>
+	        	<td width="37.5">
+	        	<div align="right">
+	        	Type:<select name="arg_type_<%=x %>_<%=y %>" id="arg_type_<%=x %>_<%=y %>" onchange="argTypeChange(this,<%=x %>,<%=y %>);" form="updateForm">
+	        	<option value="literal" <% if(curArg.getAttribute("arg_type").equals("literal")){ out.print("selected"); } %>>Literal</option>
+	        	<option value="int" <% if(curArg.getAttribute("arg_type").equals("int")){ out.print("selected"); } %>>Integer</option>
+	        	<option value="long" <% if(curArg.getAttribute("arg_type").equals("long")){ out.print("selected"); } %>>Long</option>
+	        	</select>
+	        	<script style="display:none;">
+	        	
+	        	document.getElementById("arg_type_<%=x %>_<%=y %>").value="<%=curArg.getAttribute("arg_type") %>";
+	        	
+	        	</script>
+	        	</div>
+	        	</td>
+	        	<td width="37.5">
+	        	<div align="right">
+	        	<input form="updateForm" style="" type="text" id="arg_value_<%=x %>_<%=y %>" name="arg_value_<%=x %>_<%=y %>" value="<%=curArg.getAttribute("arg_value") %>"></input>
+	        	</div>
+	        	</td>
+	        	</tr>
+	        	</table>
+	        	</div>
+	        	<%
+				}
+	        	%>
+	        	</td>
+	        	</tr>
+	        	</table>
+	        	</td>
+	        	</tr>
+	        	</table>
+	        	</td>
+	        	</tr>
+	        <%
+	        	x += numArgs;
+        	}
+	        %>
+        </table>
+        </td>
+        </tr>
+        
         <tr>
         <td>
         <table width="100%">

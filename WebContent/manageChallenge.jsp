@@ -211,6 +211,14 @@
         <textarea rows="10" form="updateForm" style="width:90%" name="description"><%=challengeHead.getAttribute("description") %></textarea>
         </td>
         </tr>
+        <tr>
+        <td width="10%" style="vertical-align:middle;">
+        Seed:
+        </td>
+        <td width="90%">
+        <input form="updateForm" style="width:90%" type="text" name="seed" value="<%=challengeHead.getAttribute("seed") %>"></input>
+        </td>
+        </tr>
         <tr<%=" " + nonDetailedAppend %>>
         <td colspan="2">
         &nbsp;

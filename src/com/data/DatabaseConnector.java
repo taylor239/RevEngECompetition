@@ -374,6 +374,72 @@ public class DatabaseConnector
 		return myReturn;
 	}
 	
+	
+	/**
+	 * 
+	 * @param username
+	 * @param password
+	 * @return
+	 */
+	public synchronized DBObj getTestCount(String testname)
+	{
+		if(verbose)
+		{
+			System.out.println("Connector signing in");
+		}
+		ArrayList tables=new ArrayList();
+		tables.add("user");
+		System.out.println(getConnection());
+		if(verbose)
+		{
+			System.out.println("Connector got connection");
+		}
+		ConcurrentHashMap attributes=new ConcurrentHashMap();
+		try
+		{
+			PreparedStatement myStmt=connection.prepareStatement("SELECT COUNT(*) AS 'count' FROM `auto_grade_tests_default` WHERE `challenge_name` = ?");
+			myStmt.setString(1, testname);
+			ResultSet myResults=myStmt.executeQuery();
+			//disconnect();
+			ResultSetMetaData meta=myResults.getMetaData();
+			int columns=meta.getColumnCount();
+			if(myResults.next())
+			{
+				for(int x=1; x<=columns; x++)
+				{
+					if(meta.getColumnLabel(x).equals("password") || meta.getColumnLabel(x).equals("salt"))
+					{
+						
+					}
+					else
+					{
+						if(myResults.getObject(x)!=null)
+						{
+							attributes.put(meta.getColumnLabel(x), myResults.getObject(x));
+						}
+						else
+						{
+							attributes.put(meta.getColumnLabel(x), "");
+						}
+					}
+				}
+			}
+			else
+			{
+				disconnect();
+				return null;
+			}
+		}
+		catch(Exception e)
+		{
+			disconnect();
+			return null;
+		}
+		DBObj myReturn=new DBObj(attributes, false, tables);
+		disconnect();
+		return myReturn;
+	}
+	
 	/**
 	 * 
 	 * @param username
@@ -1070,6 +1136,10 @@ public class DatabaseConnector
 						}
 					}
 				}
+				if(attributes.get("auto_grade").equals(true))
+				{
+					attributes.put("grading", getChallengeDefaultGrading((String)attributes.get("challenge_name"), email));
+				}
 				DBObj tmp = new DBObj(attributes, false, tables);
 				myReturn.add(tmp);
 			}
@@ -1303,7 +1373,7 @@ public class DatabaseConnector
 		ArrayList myReturn = new ArrayList();
 		try
 		{
-			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM auto_grade_tests_default INNER JOIN auto_grade_args_default ON auto_grade_tests_default.challenge_name = auto_grade_args_default.challenge_name AND auto_grade_tests_default.administrator = auto_grade_args_default.administrator AND auto_grade_tests_default.test_number = auto_grade_args_default.test_number WHERE auto_grade_tests_default.administrator = '' OR auto_grade_tests_default.administrator = ? AND auto_grade_tests_default.challenge_name = ? ORDER BY auto_grade_args_default.test_number ASC, auto_grade_args_default.arg_order ASC");
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM auto_grade_tests_default INNER JOIN auto_grade_args_default ON auto_grade_tests_default.challenge_name = auto_grade_args_default.challenge_name AND auto_grade_tests_default.administrator = auto_grade_args_default.administrator AND auto_grade_tests_default.test_number = auto_grade_args_default.test_number WHERE (auto_grade_tests_default.administrator = '' OR auto_grade_tests_default.administrator = ?) AND auto_grade_tests_default.challenge_name = ? ORDER BY auto_grade_args_default.test_number ASC, auto_grade_args_default.arg_order ASC");
 			myStmt.setString(1, username);
 			myStmt.setString(2, challengeName);
 			ResultSet myResults=myStmt.executeQuery();
@@ -1545,17 +1615,19 @@ public class DatabaseConnector
 		return getUser(email);
 	}
 	
-	public boolean updateChallenge(String prevName, String newName, String openTime, String endTime, String description)
+	public boolean updateChallenge(String prevName, String newName, String openTime, String endTime, String description, boolean randomSeed, String seed)
 	{
 		getConnection();
 		try
 		{
-			PreparedStatement myStmt = connection.prepareStatement("UPDATE `challenge` SET `challenge_name`=?,`open_time`=?,`end_time`=?,`description`=? WHERE `challenge_name`=?");
+			PreparedStatement myStmt = connection.prepareStatement("UPDATE `challenge` SET `challenge_name`=?,`open_time`=?,`end_time`=?,`description`=?, `randomSeed`=?, `seed`=? WHERE `challenge_name`=?");
 			myStmt.setString(1, newName);
 			myStmt.setString(2, openTime);
 			myStmt.setString(3, endTime);
 			myStmt.setString(4, description);
-			myStmt.setString(5, prevName);
+			myStmt.setBoolean(5, randomSeed);
+			myStmt.setString(6, seed);
+			myStmt.setString(7, prevName);
 			myStmt.execute();
 		}
 		catch(Exception e)
@@ -1568,18 +1640,20 @@ public class DatabaseConnector
 		return true;
 	}
 	
-	public boolean updateChallenge(String prevName, String newName, String openTime, String endTime, String description, boolean autoGrade)
+	public boolean updateChallenge(String prevName, String newName, String openTime, String endTime, String description, boolean autoGrade, boolean randomSeed, String seed)
 	{
 		getConnection();
 		try
 		{
-			PreparedStatement myStmt = connection.prepareStatement("UPDATE `challenge` SET `challenge_name`=?,`open_time`=?,`end_time`=?,`description`=?,`auto_grade`=? WHERE `challenge_name`=?");
+			PreparedStatement myStmt = connection.prepareStatement("UPDATE `challenge` SET `challenge_name`=?,`open_time`=?,`end_time`=?,`description`=?,`auto_grade`=?, `randomSeed`=?, `seed`=? WHERE `challenge_name`=?");
 			myStmt.setString(1, newName);
 			myStmt.setString(2, openTime);
 			myStmt.setString(3, endTime);
 			myStmt.setString(4, description);
 			myStmt.setBoolean(5, autoGrade);
-			myStmt.setString(6, prevName);
+			myStmt.setBoolean(6, randomSeed);
+			myStmt.setString(7, seed);
+			myStmt.setString(8, prevName);
 			myStmt.execute();
 		}
 		catch(Exception e)
@@ -1656,18 +1730,20 @@ public class DatabaseConnector
 		return true;
 	}
 	
-	public boolean createChallenge(String newName, String openTime, String endTime, String description, String email, String type)
+	public boolean createChallenge(String newName, String openTime, String endTime, String description, String email, String type, boolean randomSeed, String seed)
 	{
 		getConnection();
 		try
 		{
-			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge`(`challenge_name`, `open_time`, `end_time`, `description`, `admin_email`, `type`) VALUES (?,?,?,?,?,?)");
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge`(`challenge_name`, `open_time`, `end_time`, `description`, `admin_email`, `type`, `randomSeed`, `seed`) VALUES (?,?,?,?,?,?,?,?)");
 			myStmt.setString(1, newName);
 			myStmt.setString(2, openTime);
 			myStmt.setString(3, endTime);
 			myStmt.setString(4, description);
 			myStmt.setString(5, email);
 			myStmt.setString(6, type);
+			myStmt.setBoolean(7, randomSeed);
+			myStmt.setString(8, seed);
 			
 			myStmt.execute();
 		}
@@ -1682,12 +1758,12 @@ public class DatabaseConnector
 		return true;
 	}
 	
-	public boolean createChallenge(String newName, String openTime, String endTime, String description, String email, String type, boolean autoGrade)
+	public boolean createChallenge(String newName, String openTime, String endTime, String description, String email, String type, boolean autoGrade, boolean randomSeed, String seed)
 	{
 		getConnection();
 		try
 		{
-			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge`(`challenge_name`, `open_time`, `end_time`, `description`, `admin_email`, `type`, `auto_grade`) VALUES (?,?,?,?,?,?,?)");
+			PreparedStatement myStmt = connection.prepareStatement("INSERT INTO `challenge`(`challenge_name`, `open_time`, `end_time`, `description`, `admin_email`, `type`, `auto_grade`, `randomSeed`, `seed`) VALUES (?,?,?,?,?,?,?,?,?)");
 			myStmt.setString(1, newName);
 			myStmt.setString(2, openTime);
 			myStmt.setString(3, endTime);
@@ -1695,6 +1771,8 @@ public class DatabaseConnector
 			myStmt.setString(5, email);
 			myStmt.setString(6, type);
 			myStmt.setBoolean(7, autoGrade);
+			myStmt.setBoolean(8, randomSeed);
+			myStmt.setString(9, seed);
 			
 			myStmt.execute();
 		}
@@ -2282,9 +2360,9 @@ public class DatabaseConnector
 	 * 
 	 * @param toUpdate
 	 */
-	public synchronized void challengeParticipantCodeWritten(String challengeName, String email, byte[] originalFile, byte[] gradingFile, byte[] obfuscatedFile)
+	public synchronized void challengeParticipantCodeWritten(String challengeName, String email, byte[] originalFile, byte[] gradingFile, byte[] obfuscatedFile, int seed)
 	{
-		String stmt="UPDATE `challenge_participant` SET `code_generated` = '1', `originalFile` = ?,  `gradingFile` = ?, `obfuscatedFile` = ?, `codeGeneratedTime` = CURRENT_TIMESTAMP WHERE `challenge_participant`.`challenge_name` = ? AND `challenge_participant`.`email` = ?";
+		String stmt="UPDATE `challenge_participant` SET `code_generated` = '1', `originalFile` = ?,  `gradingFile` = ?, `obfuscatedFile` = ?, `codeGeneratedTime` = CURRENT_TIMESTAMP, `participantSeed` = ? WHERE `challenge_participant`.`challenge_name` = ? AND `challenge_participant`.`email` = ?";
 		try
 		{
 			getConnection();
@@ -2292,8 +2370,9 @@ public class DatabaseConnector
 			myStmt.setBytes(1, originalFile);
 			myStmt.setBytes(2, gradingFile);
 			myStmt.setBytes(3, obfuscatedFile);
-			myStmt.setString(4, challengeName);
-			myStmt.setString(5, email);
+			myStmt.setString(4, "" + seed);
+			myStmt.setString(5, challengeName);
+			myStmt.setString(6, email);
 			myStmt.executeUpdate();
 			myStmt.close();
 		}

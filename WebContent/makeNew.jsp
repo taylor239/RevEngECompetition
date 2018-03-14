@@ -22,6 +22,7 @@
         ArrayList selectedDefault = new ArrayList();
         ArrayList defaultChallenges = new ArrayList();
         
+        ArrayList headGrading = new ArrayList();
         
         if(!hasUser || !(myUser.getAttribute("role").equals("admin")))
         {
@@ -45,14 +46,13 @@
         	
         	if(selectedDefault == null || selectedDefault.isEmpty())
         	{
-        		selectedDefault = myConnector.getChallengeDefault((String)headChallenge.getAttribute("challenge_name"));
+        		selectedDefault = myConnector.getChallengeDefault((String)headChallenge.getAttribute("challenge_name"), (String)headChallenge.getAttribute("administrator"));
         	}
         	
 	        myChallengesFull = myConnector.getChallenge((String)request.getParameter("challengeName"), (String)myUser.getAttribute("email"));
 	        //challengeAssignment = myConnector.getChallengeAssignment((String)myUser.getAttribute("email"), (String)request.getParameter("challengeName"));
 	        allStudents = myConnector.getAdminStudents((String)myUser.getAttribute("email"));
 	        
-	      
         }
         %>
         <script>
@@ -69,6 +69,7 @@
         	if(selectedDefault != null && !selectedDefault.isEmpty())
         	{
         	DBObj topLevel = (DBObj)selectedDefault.get(0);
+        	headGrading = (ArrayList)topLevel.getAttribute("grading");
         %>
         <form id="updateForm" action="updateChallengeDefault.jsp">
         <input type="hidden" name="new_type" value="challenge"></input>
@@ -271,12 +272,47 @@
         	<tr>
         	<td>
         	Test Cases:
-        	<input form="updateForm" type="hidden" id="num_tests" name="num_tests" value="0"></input>
+        	<%
+        	System.out.println("Grading tests:");
+        	
+        	int numTests = 0;
+        	
+        	for(int x=0; x<headGrading.size(); x++)
+        	{
+        		System.out.println("Grading test");
+        		DBObj curTest = (DBObj)headGrading.get(x);
+        		//System.out.println(curTest.getAttributeNames());
+        		System.out.println(curTest.getAttributes());
+				int numArgs = 0;
+	        	
+	        	
+	        	while(x + numArgs < headGrading.size())
+	        	{
+	        		DBObj tmpTest = (DBObj)headGrading.get(x + numArgs);
+	        		
+	        		if(!tmpTest.getAttribute("test_number").equals(curTest.getAttribute("test_number")))
+	        		{
+	        			break;
+	        		}
+	        		
+	        		numArgs++;
+	        	}
+	        	
+	        	numArgs--;
+	        	
+	        	System.out.println("Args: " + numArgs);
+	        	
+	        	x += numArgs;
+	        	numTests++;
+        	}
+        	numTests--;
+        	%>
+        	<input form="updateForm" type="hidden" id="num_tests" name="num_tests" value="<%=numTests %>"></input>
         	</td>
         	<td>
         	<div align="right">
         	<script>
-        	document.getElementById("num_tests").value = 0;
+        	document.getElementById("num_tests").value = <%=numTests %>;
         	function addCase(element)
         	{
         		var curNum = document.getElementById("num_tests").value;
@@ -443,15 +479,24 @@
         	</div>
         	</td>
         	</tr>
+        	<%
+        	System.out.println("Grading tests:");
+        	for(int x=0; x<headGrading.size(); x++)
+        	{
+        		System.out.println("Grading test");
+        		DBObj curTest = (DBObj)headGrading.get(x);
+        		//System.out.println(curTest.getAttributeNames());
+        		System.out.println(curTest.getAttributes());
+        	%>
         		<tr>
         		<td colspan="3" width="100%">
-        		<table id="test_table_0" width="100%">
+        		<table id="test_table_<%=x %>" width="100%">
 	        	<tr>
 	        	<td colspan="2">
-	        	<table width="100%" id="test_0">
+	        	<table width="100%" id="test_<%=x %>">
 	        	<tr>
 	        	<td colspan="3">
-	        	<b>Test 0</b>
+	        	<b>Test <%=x %></b>
 	        	</td>
 	        	</tr>
 	        	<tr>
@@ -460,10 +505,30 @@
 	        	</td>
 	        	<td colspan="2" width="75%">
 	        	<div align="right">
-	        	<input form="updateForm" style="" type="text" name="iterations_0" value="1"></input>
-	        	<input form="updateForm" type="hidden" name="num_args_0" id="num_args_0" value="0"></input>
+	        	<input form="updateForm" style="" type="text" name="iterations_<%=x %>" value="<%=curTest.getAttribute("num_iterations") %>"></input>
+	        	<%
+	        	int numArgs = 0;
+	        	
+	        	
+	        	while(x + numArgs < headGrading.size())
+	        	{
+	        		DBObj tmpTest = (DBObj)headGrading.get(x + numArgs);
+	        		
+	        		if(!tmpTest.getAttribute("test_number").equals(curTest.getAttribute("test_number")))
+	        		{
+	        			break;
+	        		}
+	        		
+	        		numArgs++;
+	        	}
+	        	
+	        	numArgs--;
+	        	
+	        	System.out.println("Args: " + numArgs);
+	        	%>
+	        	<input form="updateForm" type="hidden" name="num_args_<%=x %>" id="num_args_<%=x %>" value="<%=numArgs %>"></input>
 	        	<script>
-	        	document.getElementById("num_args_0").value = 0;
+	        	document.getElementById("num_args_<%=x %>").value = <%=numArgs %>;
 	        	</script>
 	        	</div>
 	        	</td>
@@ -474,7 +539,7 @@
 	        	</td>
 	        	<td colspan="2" width="75%">
 	        	<div align="right">
-	        	<input form="updateForm" style="" type="text" name="performance_0" value="2.0"></input>
+	        	<input form="updateForm" style="" type="text" name="performance_<%=x %>" value="<%=curTest.getAttribute("performance_multiplier") %>"></input>
 	        	</div>
 	        	</td>
 	        	</tr>
@@ -484,36 +549,48 @@
 	        	</td>
 	        	<td width="75%" colspan="2">
 	        	<div align="right">
-	        	<img src="plus.png" style="margin-right: 1em;" class="boxedChar" onclick="addCaseArg(this, 0)" />
-	        	<img src="minus.png" class="boxedChar" onclick="subtractCaseArg(this, 0)" />
+	        	<img src="plus.png" style="margin-right: 1em;" class="boxedChar" onclick="addCaseArg(this, <%=x %>)" />
+	        	<img src="minus.png" class="boxedChar" onclick="subtractCaseArg(this, <%=x %>)" />
 	        	</div>
 	        	</td>
 	        	</tr>
 	        	<tr>
-	        	<td colspan="3" width="100%" id="test_arg_row_0">
+	        	<td colspan="3" width="100%" id="test_arg_row_<%=x %>">
 				<div width="100%">
-	        	<table id="test_arg_table_0_0" width="100%">
+				<%
+				for(int y=0; y<=numArgs; y++)
+				{
+					DBObj curArg = (DBObj)headGrading.get(x + y);
+				%>
+	        	<table id="test_arg_table_<%=x %>_<%=y %>" width="100%">
 	        	<tr>
 	        	<td width="25%">
-	        	0
+	        	<%=y %>
 	        	</td>
 	        	<td width="37.5">
 	        	<div align="right">
-	        	Type:
-	        	<select name="arg_type_0_0" onchange="argTypeChange(this,0,0);" form="updateForm">
-	        	<option value="literal">Literal</option>
-	        	<option value="int">Integer</option>
-	        	<option value="long">Long</option>
+	        	Type:<select name="arg_type_<%=x %>_<%=y %>" id="arg_type_<%=x %>_<%=y %>" onchange="argTypeChange(this,<%=x %>,<%=y %>);" form="updateForm">
+	        	<option value="literal" <% if(curArg.getAttribute("arg_type").equals("literal")){ out.print("selected"); } %>>Literal</option>
+	        	<option value="int" <% if(curArg.getAttribute("arg_type").equals("int")){ out.print("selected"); } %>>Integer</option>
+	        	<option value="long" <% if(curArg.getAttribute("arg_type").equals("long")){ out.print("selected"); } %>>Long</option>
 	        	</select>
+	        	<script>
+	        	
+	        	document.getElementById("arg_type_<%=x %>_<%=y %>").value="<%=curArg.getAttribute("arg_type") %>";
+	        	
+	        	</script>
 	        	</div>
 	        	</td>
 	        	<td width="37.5">
 	        	<div align="right">
-	        	<input form="updateForm" style="" type="text" id="arg_value_0_0" name="arg_value_0_0" value="Value"></input>
+	        	<input form="updateForm" style="" type="text" id="arg_value_<%=x %>_<%=y %>" name="arg_value_<%=x %>_<%=y %>" value="<%=curArg.getAttribute("arg_value") %>"></input>
 	        	</div>
 	        	</td>
 	        	</tr>
 	        	</table>
+	        	<%
+				}
+	        	%>
 	        	</div>
 	        	</td>
 	        	</tr>
@@ -523,9 +600,16 @@
 	        	</table>
 	        	</td>
 	        	</tr>
+	        <%
+	        	x += numArgs;
+        	}
+	        %>
         </table>
         </td>
         </tr>
+        
+        
+        
         <tr>
         <td>
         <table width="100%">

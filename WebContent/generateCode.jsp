@@ -44,8 +44,18 @@
         String gradingFilePath="";
         
         int seed = 0;
-        Random rand = new SecureRandom();
-        seed = rand.nextInt();
+        
+        boolean randSeed = (boolean)((DBObj)myChallengesFull.get(0)).getAttribute("randomSeed");
+        
+        if(randSeed)
+        {
+        	Random rand = new SecureRandom();
+        	seed = rand.nextInt();
+        }
+        else
+        {
+        	seed = new Integer((String)((DBObj)myChallengesFull.get(0)).getAttribute("seed"));
+        }
         
         boolean isCompiled = false;
         for(int x=0; x<myChallengesFull.size()+myChallengesEvaluation.size(); x++)
@@ -356,7 +366,7 @@
         
         ArrayList myChallenges = new ArrayList();
         myChallenges.add(myChallengesFull.get(0));
-        myConnector.challengeParticipantCodeWritten((String)((DBObj)myChallenges.get(0)).getAttribute("challenge_name"), (String)((DBObj)myChallenges.get(0)).getAttribute("email"), firstFileData, gradingFileData, finalFileData);
+        myConnector.challengeParticipantCodeWritten((String)((DBObj)myChallenges.get(0)).getAttribute("challenge_name"), (String)((DBObj)myChallenges.get(0)).getAttribute("email"), firstFileData, gradingFileData, finalFileData, seed);
         System.out.println("Seed was: " + seed);
         //String forwardURL = "viewChallenge.jsp?challengeName="+((DBObj)myChallenges.get(0)).getAttribute("challenge_name");
         
