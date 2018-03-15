@@ -15,16 +15,6 @@
 /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
-SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
-SET time_zone = "+00:00";
-
---
--- Database: `tigress_challenge`
---
-CREATE DATABASE IF NOT EXISTS `tigress_challenge` DEFAULT CHARACTER SET latin1 COLLATE latin1_swedish_ci;
-USE `tigress_challenge`;
-
-
 --
 -- Table structure for table `auto_grade_args`
 --
@@ -167,10 +157,12 @@ CREATE TABLE `challenge` (
   `challenge_name` varchar(100) NOT NULL,
   `admin_email` varchar(50) NOT NULL,
   `open_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `end_time` timestamp NOT NULL DEFAULT '0000-00-00 00:00:00',
+  `end_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `description` text NOT NULL,
   `type` varchar(20) NOT NULL DEFAULT 'assignment',
   `auto_grade` tinyint(1) NOT NULL DEFAULT '0',
+  `randomSeed` tinyint(1) NOT NULL DEFAULT '1',
+  `seed` text,
   PRIMARY KEY (`challenge_name`),
   KEY `admin_email` (`admin_email`),
   CONSTRAINT `challenge_ibfk_1` FOREIGN KEY (`admin_email`) REFERENCES `user` (`email`) ON UPDATE CASCADE
@@ -272,6 +264,7 @@ CREATE TABLE `challenge_participant` (
   `submittedFile` longblob,
   `submittedWrittenFile` longblob,
   `submissionTime` timestamp NULL DEFAULT NULL,
+  `participantSeed` text,
   PRIMARY KEY (`challenge_name`,`email`),
   KEY `email` (`email`),
   CONSTRAINT `challenge_participant_ibfk_1` FOREIGN KEY (`challenge_name`) REFERENCES `challenge` (`challenge_name`) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -405,4 +398,4 @@ CREATE TABLE `user_request` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2018-03-03 16:35:55
+-- Dump completed on 2018-03-15 14:58:29
