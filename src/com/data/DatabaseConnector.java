@@ -1138,6 +1138,7 @@ public class DatabaseConnector
 				}
 				if(attributes.get("auto_grade").equals(true))
 				{
+					email = (String)attributes.get("administrator");
 					attributes.put("grading", getChallengeDefaultGrading((String)attributes.get("challenge_name"), email));
 				}
 				DBObj tmp = new DBObj(attributes, false, tables);
@@ -1308,7 +1309,7 @@ public class DatabaseConnector
 		ArrayList myReturn = new ArrayList();
 		try
 		{
-			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge_default INNER JOIN challenge_command_default ON challenge_default.challenge_name = challenge_command_default.challenge_name AND challenge_default.administrator = challenge_command_default.administrator WHERE challenge_default.administrator = '' OR challenge_default.administrator = ? ORDER BY challenge_default.administrator, challenge_command_default.command_order ASC");
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM challenge_default INNER JOIN challenge_command_default ON challenge_default.challenge_name = challenge_command_default.challenge_name AND challenge_default.administrator = challenge_command_default.administrator WHERE challenge_default.administrator = '' OR challenge_default.administrator = ? ORDER BY challenge_default.administrator ASC, challenge_command_default.command_order ASC");
 			myStmt.setString(1, username);
 			ResultSet myResults=myStmt.executeQuery();
 			//disconnect();
@@ -1341,7 +1342,8 @@ public class DatabaseConnector
 				}
 				if(attributes.get("auto_grade").equals(true))
 				{
-					attributes.put("grading", getChallengeDefaultGrading((String)attributes.get("challenge_name"), username));
+					String curAdmin = (String)attributes.get("administrator");
+					attributes.put("grading", getChallengeDefaultGrading((String)attributes.get("challenge_name"), curAdmin));
 				}
 				DBObj tmp = new DBObj(attributes, false, tables);
 				myReturn.add(tmp);
@@ -1373,7 +1375,7 @@ public class DatabaseConnector
 		ArrayList myReturn = new ArrayList();
 		try
 		{
-			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM auto_grade_tests_default INNER JOIN auto_grade_args_default ON auto_grade_tests_default.challenge_name = auto_grade_args_default.challenge_name AND auto_grade_tests_default.administrator = auto_grade_args_default.administrator AND auto_grade_tests_default.test_number = auto_grade_args_default.test_number WHERE (auto_grade_tests_default.administrator = '' OR auto_grade_tests_default.administrator = ?) AND auto_grade_tests_default.challenge_name = ? ORDER BY auto_grade_args_default.test_number ASC, auto_grade_args_default.arg_order ASC");
+			PreparedStatement myStmt=connection.prepareStatement("SELECT * FROM auto_grade_tests_default INNER JOIN auto_grade_args_default ON auto_grade_tests_default.challenge_name = auto_grade_args_default.challenge_name AND auto_grade_tests_default.administrator = auto_grade_args_default.administrator AND auto_grade_tests_default.test_number = auto_grade_args_default.test_number WHERE (auto_grade_tests_default.administrator = ?) AND auto_grade_tests_default.challenge_name = ? ORDER BY auto_grade_args_default.test_number ASC, auto_grade_args_default.arg_order ASC");
 			myStmt.setString(1, username);
 			myStmt.setString(2, challengeName);
 			ResultSet myResults=myStmt.executeQuery();

@@ -15,10 +15,7 @@
     	<td width="25%">
         <table class="inner_content_table">
         <%
-        ArrayList myChallengesFull = new ArrayList();
         //ArrayList challengeAssignment = new ArrayList();
-        ArrayList alreadyAssignedList = new ArrayList();
-        ArrayList allStudents = new ArrayList();
         ArrayList selectedDefault = new ArrayList();
         ArrayList defaultChallenges = new ArrayList();
         
@@ -42,16 +39,12 @@
         	
         	DBObj headChallenge = (DBObj)defaultChallenges.get(0);
         	
-        	selectedDefault = myConnector.getChallengeDefault(request.getParameter("default"));
+        	//selectedDefault = myConnector.getChallengeDefault(request.getParameter("default"));
         	
         	if(selectedDefault == null || selectedDefault.isEmpty())
         	{
         		selectedDefault = myConnector.getChallengeDefault((String)headChallenge.getAttribute("challenge_name"), (String)headChallenge.getAttribute("administrator"));
         	}
-        	
-	        myChallengesFull = myConnector.getChallenge((String)request.getParameter("challengeName"), (String)myUser.getAttribute("email"));
-	        //challengeAssignment = myConnector.getChallengeAssignment((String)myUser.getAttribute("email"), (String)request.getParameter("challengeName"));
-	        allStudents = myConnector.getAdminStudents((String)myUser.getAttribute("email"));
 	        
         }
         %>
