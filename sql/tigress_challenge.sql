@@ -15,6 +15,15 @@
 /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
+SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
+SET time_zone = "+00:00";
+
+--
+-- Database: `tigress_challenge`
+--
+CREATE DATABASE IF NOT EXISTS `tigress_challenge` DEFAULT CHARACTER SET latin1 COLLATE latin1_swedish_ci;
+USE `tigress_challenge`;
+
 --
 -- Table structure for table `auto_grade_args`
 --
