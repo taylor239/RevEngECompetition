@@ -753,6 +753,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        	String clean = nativeInterface.executeCommand(firejailClean, tmpFile, environmentalVars);
 	        	System.out.println("Cleaning..." + clean);
 	        	*/
+	        	FileUtils.deleteDirectory(genDir);
 			}
 			catch(Exception e)
 			{

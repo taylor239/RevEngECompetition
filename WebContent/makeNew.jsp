@@ -556,12 +556,12 @@
 	        	</tr>
 	        	<tr>
 	        	<td colspan="3" width="100%" id="test_arg_row_<%=x %>">
-				<div width="100%">
 				<%
 				for(int y=0; y<=numArgs; y++)
 				{
 					DBObj curArg = (DBObj)headGrading.get(x + y);
 				%>
+				<div width="100%">
 	        	<table id="test_arg_table_<%=x %>_<%=y %>" width="100%">
 	        	<tr>
 	        	<td width="25%">
@@ -588,10 +588,10 @@
 	        	</td>
 	        	</tr>
 	        	</table>
+	        	</div>
 	        	<%
 				}
 	        	%>
-	        	</div>
 	        	</td>
 	        	</tr>
 	        	</table>

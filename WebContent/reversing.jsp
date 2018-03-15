@@ -36,7 +36,7 @@
         <tr>
         <td>
         <p>
-        <a href="../Reversing_Kali_Single.zip">Kali with Reversing Tools</a>
+        <a href="https://www.offensive-security.com/kali-linux-vm-vmware-virtualbox-hyperv-image-download/">Kali Linux Download Page</a>
         </p>
         </td>
         </tr>
@@ -62,13 +62,7 @@
         <tr>
         <td>
         <p>
-        Provided here is a virtual machine image equipped with numerous security tools, including several reversing tools.  The image is based on <a href="https://www.kali.org/">Kali Linux</a> but has several additional tools installed, including the angr Python module.
-        </p><br />
-        <p>
-        To use this virtual machine, first download it via the link on the left.  Note that the file is about 4 GB and will take some time to download.  After downloading and extracting the image, use your choice of .OVF compliant virtual machine software to run the distribution.  The password for root is toor.
-        </p><br />
-        <p>
-        For information regarding any of the Kali tools, please view the Kali website (linked above).  Additional information on angr may be found <a href="http://angr.io/">here.</a>
+        This page is currently under revision.  At this time, we recommend using the latest version of Kali Linux to solve RevEngE problems.  We will be releasing a package of reverse engineering tools in the future.  The following instructions show how to install a virtual machine from a .ovf file:
         </p><br />
         <p>
         <table width="100%">
@@ -105,7 +99,7 @@
         	<li>On the "Display" tab, maximize "Video Memory" to 128 MB</li>
         	<li>On the "Network" tab, disable the "Enable Network Adapter" check box for "Adapter 1" and enable it for "Adapter 2"</li>
         	<li>Push OK and push "Start"</li>
-        	<li>Voila- it should be working (though VirtualBox is a bit buggy and may need to be restarted 2 times or so)</li>
+        	<li>It should be working (though VirtualBox is a bit buggy and may need to be restarted 2 times or so)</li>
         </ol>
         </td>
         </tr>
