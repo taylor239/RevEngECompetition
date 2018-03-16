@@ -196,7 +196,7 @@
         	</tr>
         	<tr>
         	<td width="10%" style="vertical-align:middle;">
-	        Arguments:
+	        Argument Number:
 	        </td>
 	        <td width="90%">
 	        <textarea rows="10" form="updateForm" style="width:100%" name="command_<%=x %>"><%=curObj.getAttribute("command") %></textarea>
@@ -351,7 +351,7 @@
 	        	'</tr>' +
 	        	'<tr>' +
 	        	'<td width="25%">' +
-	        	'Arguments:' +
+	        	'Argument Number:' +
 	        	'</td>' +
 	        	'<td width="75%" colspan="2">' +
 	        	'<div align="right">' +
@@ -542,7 +542,7 @@
 	        	</tr>
 	        	<tr>
 	        	<td width="25%">
-	        	Arguments:
+	        	Argument Number:
 	        	</td>
 	        	<td width="75%" colspan="2">
 	        	<div align="right">
@@ -776,7 +776,7 @@
             	</tr>\
             	<tr>\
             	<td width=\"33%\">\
-    	        Arguments:\
+    	        Argument Number:\
     	        </td>\
     	        <td width=\"67%\">\
     	        <input type=\"text\" form=\"updateForm\" style=\"width:90%\" name=\"command_" + x + "\" value=\"" + problemCommands[selectEle.value + "Command" + x] + "\">\

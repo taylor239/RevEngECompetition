@@ -617,8 +617,11 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        		}
 	    	        	}
 	    	        	redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + textToInsert + " <br />\";</script>");
+	    	        	for(int y=0; y<1000; y++)
+	    	        	{
+	    	        		redirectWriter.println("<div style=\"display:none\">#</div>");
+	    	        	}
 	    	        	redirectWriter.flush();
-	    	        	response.getOutputStream().flush();
 	    	    		response.flushBuffer();
 	    	        	
 	    	        	String[] firejailClean = new String[2];
@@ -760,25 +763,34 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 			{
 				e.printStackTrace();
 			}
-			redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"Grading done.  Now redirecting... <br />\";</script>");
+			//redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"Grading done.  Now redirecting... <br />\";</script>");
 			redirectWriter.flush();
 			response.flushBuffer();
 			if(uploadDataBool)
 			{
 				//response.sendRedirect("activateDataUpload.jsp");
-				redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=activateDataUpload.jsp\" /></head><body>Redirecting</html>");
+				//redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=activateDataUpload.jsp\" /></head><body>Redirecting</html>");
+				redirectWriter.flush();
+				response.flushBuffer();
 			}
 			else
 			{
 				//response.sendRedirect("myChallenges.jsp");
-				redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=myChallenges.jsp\" /></head></html>");
+				//redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=myChallenges.jsp\" /></head></html>");
+				redirectWriter.flush();
+				response.flushBuffer();
 			}
+			redirectWriter.flush();
+			response.flushBuffer();
 		}
 		else
 		{
 			PrintWriter redirectWriter = response.getWriter();
-			redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"0; url=myChallenges.jsp\" /></head></html>");
+			//redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"0; url=myChallenges.jsp\" /></head></html>");
+			redirectWriter.flush();
+			response.flushBuffer();
 		}
+		response.flushBuffer();
 	}
 
 	/**
