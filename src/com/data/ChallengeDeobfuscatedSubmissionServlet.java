@@ -768,12 +768,14 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 				e.printStackTrace();
 			}
 			//redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"Grading done.  Now redirecting... <br />\";</script>");
+			//redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Done!" + " <br />\";</script>");
 			redirectWriter.flush();
 			response.flushBuffer();
 			if(uploadDataBool)
 			{
 				//response.sendRedirect("activateDataUpload.jsp");
 				//redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=activateDataUpload.jsp\" /></head><body>Redirecting</html>");
+				redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Done!" + " <br />\";</script>");
 				redirectWriter.flush();
 				response.flushBuffer();
 			}
@@ -781,6 +783,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 			{
 				//response.sendRedirect("myChallenges.jsp");
 				//redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=myChallenges.jsp\" /></head></html>");
+				redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Done!" + " <br />\";</script>");
 				redirectWriter.flush();
 				response.flushBuffer();
 			}
