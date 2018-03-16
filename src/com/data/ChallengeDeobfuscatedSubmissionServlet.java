@@ -371,6 +371,10 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        			int numFailures = 0;
 	        			int numPerformanceFailures = 0;
 	        			redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Testing " + numIterations + " values." + " <br />\";</script>");
+	        			for(int y=0; y<1000; y++)
+	    	        	{
+	    	        		redirectWriter.println("<div style=\"display:none\">#</div>");
+	    	        	}
 	        			redirectWriter.flush();
 	    	    		response.flushBuffer();
 	        			myConnector.gradeChallengeParticipant(challengeName, (String)myUser.getAttribute("email"), (int)previousMap.getAttribute("test_number"), 0, false, false, true);
