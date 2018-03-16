@@ -618,6 +618,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        	}
 	    	        	redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + textToInsert + " <br />\";</script>");
 	    	        	redirectWriter.flush();
+	    	        	response.getOutputStream().flush();
 	    	    		response.flushBuffer();
 	    	        	
 	    	        	String[] firejailClean = new String[2];

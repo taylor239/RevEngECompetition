@@ -39,6 +39,8 @@
         	
         	DBObj headChallenge = (DBObj)defaultChallenges.get(0);
         	
+        	System.out.println("Head is: " + headChallenge.getAttribute("challenge_name") + ", " + headChallenge.getAttribute("administrator"));
+        	
         	//selectedDefault = myConnector.getChallengeDefault(request.getParameter("default"));
         	
         	if(selectedDefault == null || selectedDefault.isEmpty())
@@ -267,11 +269,13 @@
         	Test Cases:
         	<%
         	System.out.println("Grading tests:");
+        	System.out.println(headGrading);
         	
         	int numTests = 0;
         	
-        	for(int x=0; x<headGrading.size(); x++)
+        	for(int x=0; headGrading != null && x<headGrading.size(); x++)
         	{
+        		System.out.println("Test num " + numTests);
         		System.out.println("Grading test");
         		DBObj curTest = (DBObj)headGrading.get(x);
         		//System.out.println(curTest.getAttributeNames());
@@ -474,7 +478,7 @@
         	</tr>
         	<%
         	System.out.println("Grading tests:");
-        	for(int x=0; x<headGrading.size(); x++)
+        	for(int x=0; headGrading != null && x<headGrading.size(); x++)
         	{
         		System.out.println("Grading test");
         		DBObj curTest = (DBObj)headGrading.get(x);
