@@ -112,6 +112,11 @@
         <input form="updateForm" form="updateForm" style="width:100%" onfocus="clearText(this);" type="text" name="seed" value="Seed (0 for random)"></input>
         </td>
         </tr>
+        <tr>
+        <td width="100%" colspan="2">
+        <input form="updateForm" form="updateForm" style="width:100%" onfocus="clearText(this);" type="text" name="challengeSet" value="Challenge Set"></input>
+        </td>
+        </tr>
         <script>
         totalCommands = <%=selectedDefault.size() %>;
         </script>

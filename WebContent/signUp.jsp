@@ -60,7 +60,7 @@
         <table class="news_table">
         <tr>
         <td colspan="3" align="left">
-        The site administrator will review and approve your request. You will be notified upon approval.  Save the information entered here; the login credentials you provide here are not stored in plaintext but will be used for your account upon approval.
+        
         </td>
     	</tr>
         <tr class="title_general">

@@ -90,9 +90,8 @@
         <table class="news_item_table">
         <tr>
         <td>
-        <p>This is RevEngE the Tigress Reverse Engineering Engine.  The web application here allows instructors to provide obfuscation challenges to trainees.  It does this by using the Tigress obfuscation program (see left); instructors store Tigress arguments to generate obfuscated code as "challenges."  Instructors then assign these challenges to students in the form of "assignments".  Students then generate and download obfuscated code and upload solutions which deobfuscate or "crack" the code.</p><br />
-        <p>Tigress offers several standard, typical argument sets which make it easy for those unfamiliar with Tigress to generate challenges.  This web application also hosts a virtual machine image with several reversing tools preinstalled in order to facilitate trainees' progress.  The "Tutorials" section instructs students how to use the installed tools.</p><br />
-        <p>Please see the "Information" pages for <a href="studentInfo.jsp">students</a> and <a href="instructorInfo.jsp">instructors</a> in order to learn how to use this site.</p>
+        <p>This is RevEngE the Tigress Reverse Engineering <b>Competition</b> Engine.  The purpose of this web application is to generate difficult to solve reverse engineering problems, and study how individuals complete these problems in order to study reverse engineering and obfuscation.  In short, we provide cash prizes for individuals able to solve these problems; we study the methods employed to solve these problems through our data collection metrics.</p><br />
+        <p>Please see the <a href="studentInfo.jsp">information page</a> to learn how to participate.</p>
         </td>
         </tr>
         </table>

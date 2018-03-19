@@ -142,7 +142,7 @@
         <table class="news_table" width="100%">
         <tr class="title_general">
         <td colspan="3" align="center">
-        Assignments
+        Challenges
         </td>
     	</tr>
     	<tr>
@@ -172,10 +172,10 @@
         }
         ArrayList keys = ((DBObj)myChallenges.get(0)).getAttributeNames();
         ConcurrentHashMap translationMap = new ConcurrentHashMap();
-        translationMap.put("admin_email", "Instructor");
-        translationMap.put("challenge_name", "Assignment");
-        translationMap.put("open_time", "Open");
-        translationMap.put("end_time", "Close");
+        //translationMap.put("admin_email", "Instructor");
+        translationMap.put("challenge_name", "Challenge");
+        //translationMap.put("open_time", "Open");
+        //translationMap.put("end_time", "Close");
         translationMap.put("grade", "Grade");
         translationMap.put("num_grading_iterations", "Total Tests");
         translationMap.put("auto_grade_score", "Tests Passed");
@@ -211,14 +211,17 @@
         			|| tmp.equals("performance_multiplier")
         			|| tmp.equals("seed")
         			|| tmp.equals("randomSeed")
-        			|| tmp.equals("participantSeed"))
+        			|| tmp.equals("participantSeed")
+        			|| tmp.equals("challenge_set_name")
+        			|| tmp.equals("open_time")
+        			|| tmp.equals("end_time"))
         	{
         		keys.remove(x);
         		x--;
         	}
         }
-        keys.add("open_time");
-        keys.add("end_time");
+        //keys.add("open_time");
+        //keys.add("end_time");
         for(int x=0; x<keys.size(); x++)
         {
         %>
@@ -258,15 +261,46 @@
         </td>
         </tr>
         <%
+        String prevSet = "";
+        ArrayList passedAllList = new ArrayList();
         for(int x=0; x<myChallenges.size(); x++)
         {
         	if(!((DBObj)myChallenges.get(x)).getAttribute("type").equals("assignment"))
         	{
         		continue;
         	}
+        	String curSet = (String)(((DBObj)myChallenges.get(x)).getAttribute("challenge_set_name"));
+        	String nextSet = "";
+        	if(x + 1<myChallenges.size())
+        	{
+        		nextSet = (String)(((DBObj)myChallenges.get(x + 1)).getAttribute("challenge_set_name"));
+        	}
+        	if(!curSet.equals(prevSet))
+        	{
+        		prevSet = curSet;
+        		%>
+        		<tr>
+        		<td colspan = "<%=keys.size() + 5%>">
+        		&nbsp;
+        		</td>
+        		</tr>
+        		<tr>
+        		<td colspan = "<%=keys.size() + 5%>">
+        		<hr></hr>
+        		</td>
+        		</tr>
+        		<tr>
+        		<td colspan = "<%=keys.size() + 5%>">
+        		<b>
+        		Challenge Set: <%=curSet %>
+        		</b>
+        		</td>
+        		</tr>
+        		<%
+        	}
         %>
         <form id="uploadForm_<%=x %>" action="ChallengeDeobfuscatedSubmissionServlet" method="post" enctype="multipart/form-data"></form>
-        <tr>
+        <tr id="challenge_number_<%=x %>">
 	        <%
 	        for(int y=0; y<keys.size(); y++)
 	        {
@@ -294,11 +328,12 @@
 	        		//String totalTests = "" + ((DBObj)myChallenges.get(x)).getAttribute("num_grading_iterations");
 	        		//String passedTests = "" + ((DBObj)myChallenges.get(x)).getAttribute("auto_grade_score");
 	        		%>
-	        		var message_<%=x %> = '<table width="100%"><tr width="100%"><td colspan="2" width="100%" style="vertical-align:bottom;">Assignment Instructions:</td></tr><tr><td colspan="2" style="vertical-align:top;"><table style="width:100%;"><tr><td style="font-size:medium; font-weight:normal; text-align:left;"><%=((DBObj)myChallenges.get(x)).getAttribute("description") %></td></tr><tr><td colspan="2" style="font-size:medium; font-weight:normal; text-align:left;"><%=lastSubmission %></td></tr>' + <%
+	        		var message_<%=x %> = '<table width="100%"><tr width="100%"><td colspan="2" width="100%" style="vertical-align:bottom;">Challenge Instructions:</td></tr><tr><td colspan="2" style="vertical-align:top;"><table style="width:100%;"><tr><td style="font-size:medium; font-weight:normal; text-align:left;"><%=((DBObj)myChallenges.get(x)).getAttribute("description") %></td></tr><tr><td colspan="2" style="font-size:medium; font-weight:normal; text-align:left;"><%=lastSubmission %></td></tr>' + <%
 						        		
 	        		if(isGraded)
 	        		{
 	        			Object testNums = ((DBObj)myChallenges.get(x)).getAttribute("test_number");
+	        			
 	        			if(testNums != null && testNums instanceof ArrayList)
 	        			{
 	        				ArrayList testArray = (ArrayList)testNums;
@@ -372,16 +407,20 @@
 	        				//System.out.println(testArray);
 	        				//System.out.println(performanceMultiplier);
 	        				
+	        				boolean passedAll = testArray.size() > -1;
+	        				
 	        				for(int z=0; z<testArray.size(); z++)
 	        				{
 	        					String styleAppend = "";
 	        					if((boolean)(((ArrayList)inProgressArray).get(z)))
 	        					{
 	        						styleAppend += "color: orange;";
+	        						passedAll = false;
 	        					}
 	        					else if(!((ArrayList)passedArray).get(z).equals(((ArrayList)numIterations).get(z)))
 	        					{
 	        						styleAppend += "color: red;";
+	        						passedAll = false;
 	        					}
 	        					else
 	        					{
@@ -414,6 +453,11 @@
 	    	        		%>
 	    	        		'</tr></td>' +
 	    	        		<%
+	        				}
+	        				if(passedAll)
+	        				{
+	        					System.out.println("Passed all tests!");
+	        					passedAllList.add(x);
 	        				}
 	        			}
 	        		}
@@ -479,6 +523,27 @@
 	        </td>
         </tr>
         <%
+        	if(!curSet.equals(nextSet))
+        	{
+        		%>
+        		</tr>
+        		<tr>
+        		<td colspan = "<%=keys.size() + 5%>">
+        		<hr></hr>
+        		</td>
+        		</tr>
+        		<%
+        	}
+        }
+        for(int x=0; x<passedAllList.size(); x++)
+        {
+        	%>
+        	<script>
+        	
+        	document.getElementById("challenge_number_<%=passedAllList.get(x) %>").style.backgroundColor="#fff9ad";
+        	
+        	</script>
+        	<%
         }
         }
         else if(myUser.getAttribute("role").equals("admin") && false)
@@ -529,7 +594,9 @@
             			|| tmp.equals("performance_multiplier")
             			|| tmp.equals("seed")
             			|| tmp.equals("randomSeed")
-            			|| tmp.equals("participantSeed"))
+            			|| tmp.equals("participantSeed")
+            			|| tmp.equals("open_time")
+            			|| tmp.equals("end_time"))
             	{
             		keys.remove(x);
             		x--;

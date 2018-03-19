@@ -45,19 +45,36 @@
 		String newUserMessage = request.getParameter("message");
 		String newUserType = request.getParameter("userType");
 		
-		myConnector.writeUserRequest(newUserName, newUserEmail, newUserFname, newUserMname, newUserLname, newUserPass, newUserMessage, newUserType);
+		String messageText = "";
+		try
+		{
+			myConnector.writeUser(newUserName, newUserEmail, newUserFname, newUserMname, newUserLname, newUserPass, "student", "cgtboy1988@yahoo.com", "competition");
+			ArrayList allChallenges = myConnector.getAdminChallenges("cgtboy1988@yahoo.com");
+			for(int x=0; x<allChallenges.size(); x++)
+			{
+				DBObj curObj = (DBObj)allChallenges.get(x);
+				String curName = (String)curObj.getAttribute("challenge_name");
+				myConnector.assignChallenge(curName, newUserEmail);
+			}
+			messageText = "Thank you for signing up!  You may now use your account.";
+		}
+		catch(Exception e)
+		{
+			messageText = "There was an error when creating your account.  That error caused the exception " + e;
+		}
 		
 		%>
         </div>
         <div align="center" id="inner_content_slogan">
-        Obfuscation Made Easy</div>
+        <%=messageText %>
+        </div>
         </td>
         </tr>
         </table>
         </div>
         </td>
     </tr>
-	<tr>
+	<tr style="display:none">
     	<td width="25%">
         <table class="inner_content_table">
         <tr>

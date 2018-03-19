@@ -219,6 +219,14 @@
         <input form="updateForm" style="width:90%" type="text" name="seed" value="<%=challengeHead.getAttribute("seed") %>"></input>
         </td>
         </tr>
+        <tr>
+        <td width="10%" style="vertical-align:middle;">
+        Challenge Set:
+        </td>
+        <td width="90%">
+        <input form="updateForm" style="width:90%" type="text" name="challengeSet" value="<%=challengeHead.getAttribute("challenge_set_name") %>"></input>
+        </td>
+        </tr>
         <tr<%=" " + nonDetailedAppend %>>
         <td colspan="2">
         &nbsp;

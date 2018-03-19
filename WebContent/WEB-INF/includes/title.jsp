@@ -29,19 +29,13 @@
       {
       %>
       <td class="top_button" onclick="window.document.location='studentInfo.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">
-      For Students
+      Challenges
         <ul onclick="event.stopPropagation();">
         <li onclick="window.document.location='studentInfo.jsp;'">
 		Information
 		</li>
 		<li onclick="window.document.location='myChallenges.jsp';">
-		View Assignments
-		</li>
-		<li onclick="window.document.location='reversing.jsp';">
-		Tools
-		</li>
-		<li onclick="window.document.location='tutorials.jsp';">
-		Tutorials
+		View Challenges
 		</li>
 		<li onclick="window.document.location='dataCollection.jsp';">
 		Data Collection
@@ -57,19 +51,13 @@
       {
       %>
       <td class="top_button" onclick="window.document.location='studentInfo.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">
-      For Students
+      Challenges
         <ul onclick="event.stopPropagation();">
 		<li onclick="window.document.location='studentInfo.jsp'">
 		Information
 		</li>
 		<li class="greyed">
-		View Assignments
-		</li>
-		<li onclick="window.document.location='reversing.jsp';">
-		Tools
-		</li>
-		<li onclick="window.document.location='tutorials.jsp';">
-		Tutorials
+		View Challenges
 		</li>
 		<li onclick="window.document.location='dataCollection.jsp';">
 		Data Collection
@@ -120,34 +108,7 @@
       else
       {
       %>
-      <td class="top_button" onclick="window.document.location='informationInstructor.jsp';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">
-      For Instructors
-      <ul onclick="event.stopPropagation();">
-		
-		<li onclick="window.document.location='informationInstructor.jsp';">
-		Information
-		</li>
-      	
-      	<li class="greyed">Add Students</li>
-      	
-      	<li class="greyed">Add Individual Students</li>
       
-      	<li class="greyed">Manage Students</li>
-      	
-      	<li class="greyed">Get Student Passwords</li>
-		
-		<li class="greyed">Create Assignment</li>
-		
-		<li class="greyed">
-		View Assignments
-		</li>
-		
-		<li class="greyed">Create Challenge</li>
-		
-		<li class="greyed">View Challenges</li>
-		
-		</ul>
-      </td>
       <%
       }
       %>
