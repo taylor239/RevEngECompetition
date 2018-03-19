@@ -19,10 +19,10 @@ SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
 SET time_zone = "+00:00";
 
 --
--- Database: `tigress_challenge`
+-- Database: `tigress_challenge_competition`
 --
-CREATE DATABASE IF NOT EXISTS `tigress_challenge` DEFAULT CHARACTER SET latin1 COLLATE latin1_swedish_ci;
-USE `tigress_challenge`;
+CREATE DATABASE IF NOT EXISTS `tigress_challenge_competition` DEFAULT CHARACTER SET latin1 COLLATE latin1_swedish_ci;
+USE `tigress_challenge_competition`;
 
 --
 -- Table structure for table `auto_grade_args`
