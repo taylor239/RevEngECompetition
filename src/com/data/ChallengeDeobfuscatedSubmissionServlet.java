@@ -775,7 +775,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 			{
 				//response.sendRedirect("activateDataUpload.jsp");
 				redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Done!  Beginning data upload." + " <br />\";</script>");
-				redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=activateDataUpload.jsp\" /></head><body>Redirecting</html>");
+				redirectWriter.println("<meta http-equiv=\"refresh\" content=\"2; url=activateDataUpload.jsp\" />");
 				redirectWriter.flush();
 				response.flushBuffer();
 			}
