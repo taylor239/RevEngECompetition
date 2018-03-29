@@ -13,10 +13,11 @@
 	String myToken = request.getParameter("token");
 	Gson myGson = new Gson();
 	ArrayList replyList = new ArrayList();
+	String eventName = "RevEngECompetition";
 	try
 	{
 		
-		String addTokenURL = "http://localhost:8080/DataCollectorServer/GetUploadList?username=" + myUser.getAttribute("email") + "&verifier=for_revenge";
+		String addTokenURL = "http://localhost:8080/DataCollectorServer/GetUploadList?username=" + myUser.getAttribute("email") + "&verifier=for_revenge&event=" + eventName;
 		URL myURL = new URL(addTokenURL);
 		InputStream in = myURL.openStream();
 		String reply = org.apache.commons.io.IOUtils.toString(in);
