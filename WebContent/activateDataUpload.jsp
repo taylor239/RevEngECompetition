@@ -41,10 +41,10 @@
 	{
 		e.printStackTrace();
 	}
-	
+	String redirectServer = "revenge.cs.arizona.edu";
 %>
 
-<meta http-equiv="refresh" content="0; url=http://localhost:8080/CybercraftDataCollectionConnector/ActivateDataCollection?username=<%=myUser.getAttribute("email") %>&token=<%=myNewToken %>&server=http://<%=request.getServerName() + ":" + request.getServerPort() %>/DataCollectorServer/UploadData&redirect=http://<%=request.getServerName() + ":" + request.getServerPort() %><%=request.getContextPath() %>/monitorUpload.jsp?token=<%=myNewToken %>" />
+<meta http-equiv="refresh" content="0; url=http://localhost:8080/CybercraftDataCollectionConnector/ActivateDataCollection?username=<%=myUser.getAttribute("email") %>&token=<%=myNewToken %>&server=http://<%=redirectServer + ":" + request.getServerPort() %>/DataCollectorServer/UploadData&redirect=http://<%=redirectServer + ":" + request.getServerPort() %><%=request.getContextPath() %>/monitorUpload.jsp?token=<%=myNewToken %>" />
 </body>
 
 </html>
