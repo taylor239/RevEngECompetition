@@ -37,11 +37,8 @@
 		<li onclick="window.document.location='myChallenges.jsp';">
 		View Challenges
 		</li>
-		<li onclick="window.document.location='dataCollection.jsp';">
-		Data Collection
-		</li>
 		<li onclick="window.document.location='dataUploads.jsp';">
-		Data Uploads
+		Data Collection Upload Status
 		</li>
 		</ul>
       </td>
@@ -59,11 +56,8 @@
 		<li class="greyed">
 		View Challenges
 		</li>
-		<li onclick="window.document.location='dataCollection.jsp';">
-		Data Collection
-		</li>
 		<li class="greyed">
-		Data Uploads
+		Data Collection Upload Status
 		</li>
 		</ul>
       </td>

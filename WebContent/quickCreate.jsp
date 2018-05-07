@@ -409,6 +409,7 @@
     		//console.log(selectEle);
     		//console.log(selectEle.value);
     		var numCommands = problemCommandNum[selectEle.value];
+    		document.getElementById("totalAdd").value = numCommands;
     		var hiddenTableHTML = "";
     		for(var x=0; x<=numCommands; x++)
     		{

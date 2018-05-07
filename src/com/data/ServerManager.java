@@ -329,7 +329,7 @@ public class ServerManager
 		//System.out.println("In "+dir.getAbsolutePath());
 		for(int x=0; x<command.length; x++)
 		{
-			//System.out.println("Command "+command[x]);
+			System.out.println("Command "+command[x]);
 		}
 		Process stopprocess=runtime.exec(command, environmentalVars, dir);
 		BufferedReader stopprocessinput=new BufferedReader(new InputStreamReader(stopprocess.getInputStream()));
@@ -351,7 +351,7 @@ public class ServerManager
 		//System.out.println("Exited with error code "+exitVal);
 		//myReturn+='\n';
 		//myReturn+="Exited with error code "+exitVal;
-		//System.out.println(myReturn);
+		System.out.println(myReturn);
 		return myReturn;
 	}
 	

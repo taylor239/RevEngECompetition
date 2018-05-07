@@ -60,7 +60,12 @@
         <table class="news_table">
         <tr class="title_general">
         <td align="center">
-        Upload Status
+        Your Data Collection Upload Status
+        </td>
+    	</tr>
+    	<tr>
+        <td align="center">
+        Each time you elect to upload your data from the data collection software, a new entry will appear here.  Click on an upload to view its status.
         </td>
     	</tr>
         </table>

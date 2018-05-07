@@ -56,7 +56,7 @@
         <table class="news_table">
         <tr class="title_general">
         <td align="center">
-        Upload Status
+        Data Upload Status
         </td>
     	</tr>
         </table>
@@ -78,6 +78,7 @@
         <tr>
         <td colspan="2" width="100%">
         <p>
+        Data uploads are divided into frames of data, each of which has a particular size and covers a particular time period.  These frames are uploaded from your device to RevEngE, and consist of screenshots, process and window information, mouse clicks, keyboard strokes, and other data from your device.
         <%
         if(!initializing)
         {

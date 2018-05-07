@@ -257,7 +257,7 @@
         <div align="center"><b>Submit</b></div>
         </td>
         <td width="<% out.print(100/((double)keys.size() + 5)); %>%">
-        <div align="center"><b>Upload Data</b></div>
+        <div align="center"><b>Upload Collected Data</b></div>
         </td>
         </tr>
         <%
@@ -484,9 +484,10 @@
 	        <%
 	        if((Integer)((DBObj)myChallenges.get(x)).getAttribute("code_generated") == 0)
 	        {
+	        	request.getRequestDispatcher("generateCodeOnly.jsp?challengeName=" + ((DBObj)myChallenges.get(x)).getAttribute("challenge_name")).include(request, response);
 	        %>
-	        <a href="generateCode.jsp?challengeName=<%= ((DBObj)myChallenges.get(x)).getAttribute("challenge_name") %>">
-	        Generate
+	        <a href="ChallengeObfuscatedFileServer?challengeName=<%= ((DBObj)myChallenges.get(x)).getAttribute("challenge_name") %>">
+	        Download
 	        </a>
 	        <%
 	        }
