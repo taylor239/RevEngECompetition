@@ -40,6 +40,7 @@ to learn more about the merging process.
 Useful commands:
    *) tigress --help     : Show this message
    *) tigress --install  : Show how to install Tigress 
+   *) tigress --test     : Show how to run tests to ensure proper installation 
    *) tigress --options  : Show complete list of options to tigress
    *) tigress --license  : Display the tigress license
    *) tigress --bibtex   : See how to cite us
@@ -260,12 +261,12 @@ End-of-message
 fi
 
 ########################################################################################
-# License
+# Version
 ########################################################################################
 if [ "$1" == "--version" ] || [ "$1" == "--Version" ] || [ "$1" == "-version" ] || [ "$1" == "-Version" ]
 then
 cat <<End-of-message
-Tigress Linux-x86_64-2.0, revision 1782, build 2015-03-27 15:12:03+00:00
+Tigress Linux-x86_64-unstable, revision 2291, build 2018-07-05 02:48:36 -0700
 End-of-message
 
    exit 0
@@ -282,13 +283,46 @@ CIL not properly handling some OS X extensions:
 
 #ifdef __APPLE__
 #include<Availability.h>
+#include<sys/cdefs.h>
 #undef __OSX_AVAILABLE_STARTING
 #define __OSX_AVAILABLE_STARTING(_mac, _iphone)
 #undef __OSX_AVAILABLE_BUT_DEPRECATED
 #define __OSX_AVAILABLE_BUT_DEPRECATED(_osxIntro, _osxDep, _iosIntro, _iosDep)
 #undef __OSX_AVAILABLE_BUT_DEPRECATED_MSG
 #define __OSX_AVAILABLE_BUT_DEPRECATED_MSG(_osxIntro, _osxDep, _iosIntro, _iosDep, _msg)
+#undef __OSX_DEPRECATED
+#define __OSX_DEPRECATED(_start, _dep, _msg)
+#undef __IOS_DEPRECATED
+#define __IOS_DEPRECATED(_start, _dep, _msg)
+#undef __TVOS_DEPRECATED
+#define __TVOS_DEPRECATED(_start, _dep, _msg)
+#undef __WATCHOS_DEPRECATED
+#define __WATCHOS_DEPRECATED(_start, _dep, _msg)
+#undef __OSX_AVAILABLE
+#define __OSX_AVAILABLE(_arg)
+#undef __IOS_AVAILABLE
+#define __IOS_AVAILABLE(_arg)
+#undef __TVOS_AVAILABLE
+#define __TVOS_AVAILABLE(_arg)
+#undef __WATCHOS_AVAILABLE
+#define __WATCHOS_AVAILABLE(_arg)
+#undef __OSX_PROHIBITED
+#define __OSX_PROHIBITED
+#undef __IOS_PROHIBITED
+#define __IOS_PROHIBITED
+#undef __TVOS_PROHIBITED
+#define __TVOS_PROHIBITED
+#undef __WATCHOS_PROHIBITED
+#define __WATCHOS_PROHIBITED
+#undef __OS_AVAILABILITY_MSG
+#define __OS_AVAILABILITY_MSG(a,b,c)
 #undef __BLOCKS__
+#undef _Nullable
+#define _Nullable
+#undef _Nonnull
+#define _Nonnull
+#undef __swift_unavailable
+#define __swift_unavailable(_msg)
 #endif
 
 Compile with 
@@ -310,16 +344,18 @@ Top Level Options
                                                          architecture, operating system,
                                                          and compiler being used. We
                                                          currently recognize the
-                                                         following two strings
-                                                         x86_64:Linux:Gcc:4.6 and
-                                                         x86_64:Darwin:Clang:5.1. This
-                                                         is mostly necessary because
-                                                         Clang does not support some
-                                                         features (most notably asm
-                                                         goto) that Gcc does. In the
-                                                         future we will use this to
-                                                         provide better support for
-                                                         32-bit binaries. Default=0.
+                                                         following strings:
+                                                         x86_64:Linux:Gcc:4.6,
+                                                         x86_64:Darwin:Clang:5.1,
+                                                         armv7:Linux:Gcc:4.6,
+                                                         armv8:Linux:Gcc:4.6. This is
+                                                         mostly necessary because Clang
+                                                         does not support some features
+                                                         (most notably asm goto) that
+                                                         Gcc does. In the future we will
+                                                         use this to provide better
+                                                         support for 32-bit binaries.
+                                                         Default=0.
    --out                              file.c             The file to write to.
    --Seed                             INTSPEC            The randomization seed.
                                                          --Seed=0 makes Tigress generate
@@ -336,7 +372,31 @@ Top Level Options
                                                          --Verbosity=0 makes Tigress
                                                          quiet. --Verbosity=1 prints
                                                          each transformation as it is
-                                                         being applied. Default=0.
+                                                         being applied. Higher levels
+                                                         also print out all the versions
+                                                         of functions and variables
+                                                         being constructed. Default=0.
+   --Skip                             BOOLSPEC           Skip a particular
+                                                         transformation. Typically, use
+                                                         like this to skip
+                                                         transformation T1: tigress
+                                                         --Transform=T1 --Skip=true ...
+                                                         --Transform=T2 --Skip=false
+                                                         .... This can be useful when
+                                                         you have a long sequence of
+                                                         transformations and want to
+                                                         experiment with turning certain
+                                                         ones on or off. Default=false.
+   --Input                            INPUTSPEC          Specify invariants over the
+                                                         command line arguments, such
+                                                         the range of integer values a
+                                                         particular argument may take,
+                                                         the range of lengths of an
+                                                         argument, or the string value
+                                                         of an argument. These are used
+                                                         by the input opaque predicate,
+                                                         which is created by
+                                                         --InitOpaque=input. Default=0.
 
 
 Argument Specfications
@@ -347,6 +407,16 @@ Argument Specfications
                                                          int?int=select a random integer
                                                          value in the range [int,int];
                                                          int=select this value
+   FRACSPEC                           *, int, int?int,   The FRACSPEC notation allows
+                                      %int               the selection of a fraction of
+                                                         a set of elements. *=100%;
+                                                         int=select exactly this number
+                                                         of elements (if they exist);
+                                                         int?int=a?b selects a random
+                                                         number of elements in the rage
+                                                         [a,b] (if they exist);
+                                                         %int=select this fraction of
+                                                         available elements
    BOOLSPEC                           ?, true, false     The BOOLSPEC notation allows
                                                          randomized selection of boolean
                                                          valued options. ?=select a
@@ -387,6 +457,73 @@ Argument Specfications
                                                          notation is a
                                                          semicolon-separated list of
                                                          IDENTSPEC:IDENTSPEC.
+   INPUTSPEC                          int, ?int, int?,   The --Input=... switch allows
+                                      int?int, +int,     you to specify invariants over
+                                      -int, "int",       the command line arguments.
+                                      "string", "length" These are used when you set
+                                                         --AddOpaqueStructs=input and
+                                                         --VirtualizeOpaqueStructs=input
+                                                         to create opaque constructs
+                                                         that appear to depend on input.
+                                                         An input specification is a
+                                                         coomma-separated list of
+                                                         3-tuples: position:kind:value.
+                                                         I.e.,
+                                                         --Input=position:kind:value,position:kind:value,.../tt>
+                                                         For example, consider the input
+                                                         specification
+                                                         --InputSpec=+1:int:34?56,-1:length:1?
+                                                         The first tuple specifies that
+                                                         the first command line argument
+                                                         must evaluate to an integer in
+                                                         the range 34-56, and the last
+                                                         argument has a length of
+                                                         exactly 1 character.
+                                                         Specifically, position=/+n|-n/,
+                                                         i.e. the n:th command line
+                                                         argument from the beginning or
+                                                         end of the line. The second
+                                                         part of the 3-tuple, kind is
+                                                         /int|string|length/, specifying
+                                                         that an invariant over a
+                                                         command line argument is a
+                                                         range of integer values, a
+                                                         particular string value, or the
+                                                         length (in characters) of an
+                                                         argument. The last part of the
+                                                         3-tuple, value, allows you to
+                                                         specify four types of ranges:
+                                                         /[0-9]+/, /?[0-9]+/, /[0-9]+?/,
+                                                         and /[0-9]+?[0-9]+/,/[0-9]*?/,
+                                                         for a specfic value n, a range
+                                                         [n,..], a range [..,n], and a
+                                                         range [n..m]. n (a single
+                                                         integer) specifies a specific
+                                                         value, n? specifies a range
+                                                         starting at n int=range
+                                                         specification: matches a
+                                                         particular integer; ?int=range
+                                                         specification: matches any
+                                                         value from int and up;
+                                                         int?=range specification:
+                                                         matches any value up to int;
+                                                         int?int=range specification:
+                                                         matches values in the range.;
+                                                         +int=position specification:
+                                                         argument number int from the
+                                                         left on the command line;
+                                                         -int=position specification:
+                                                         argument number int from the
+                                                         right on the command line;
+                                                         "int"=invariant specification:
+                                                         match the integer value of a
+                                                         command line argument;
+                                                         "string"=invariant
+                                                         specification: match the string
+                                                         value of a command line
+                                                         argument; "length"=invariant
+                                                         specification: match the length
+                                                         of a string argument
 
 
 Options Valid for Each Transformation
@@ -1059,12 +1196,15 @@ Options Valid for Each Transformation
                                                          password once for every check.
                                                          Default=0.
 
+
+Transformation: Leak
+
 --Transform=CleanUp                                      Transformation to run last, to
                                                          clean up the generated code.
 
    --CleanUpKinds                     names, annotations,Specify types of cleanup to
-                                      constants, *       perform
-                                                         Default=names,annotations,constants.
+                                      constants,         perform
+                                      randomize, *       Default=names,annotations,constants.
                                                          names=Replace identifiers with
                                                          less obvious ones;
                                                          annotations=Remove annotations
@@ -1073,7 +1213,9 @@ Options Valid for Each Transformation
                                                          again on a file that has had
                                                          annotations removed;
                                                          constants=Fold constant
-                                                         expressions; *=Same as
+                                                         expressions; randomize=Randomly
+                                                         reorder functions in the output
+                                                         file; *=Same as
                                                          names,annotations,constants
 
 --Transform=Info                                         Print internal information.
@@ -1122,6 +1264,24 @@ End-of-message
 fi
 
 ########################################################################################
+# Testing
+########################################################################################
+if [ "$1" == "--test" ] || [ "$1" == "--Test" ] || [ "$1" == "-test" ] || [ "$1" == "-Test" ]
+then
+cat <<"End-of-message"
+Tigress comes with a suite of simple test cases that you can run to ensure
+proper installation on your platform:
+   > cd $TIGRESS_HOME
+   > unzip simple-tests.zip
+   > cd simple
+   > make
+Please report if any tests fail on your system.
+End-of-message
+
+   exit 0
+fi
+
+########################################################################################
 # Check that environment vars have been set properly.
 ########################################################################################
 if [ "$OSTYPE" == "darwin" ]
@@ -1141,7 +1301,8 @@ fi
 ########################################################################################
 # Generate random operators for the jitter.
 ########################################################################################
-opcodes=(JIT_ADD JIT_ADDC JIT_ADDX JIT_ALLOCA JIT_AND JIT_BEQ JIT_BGE JIT_BGT JIT_BLE JIT_BLT JIT_BMC JIT_BMS JIT_BNE JIT_BOADD JIT_BOSUB JIT_BNOADD JIT_BNOSUB JIT_CALL JIT_CEIL JIT_CODESTART JIT_DECL_ARG JIT_DIV JIT_EQ JIT_EXT JIT_FADD JIT_FBEQ JIT_FBGE JIT_FBGT JIT_FBLE JIT_FBLT JIT_FBNE JIT_FDIV JIT_FLD JIT_FLDX JIT_FLOOR JIT_FMOV JIT_FMUL JIT_FNEG JIT_FPUTARG JIT_FRET JIT_FRETVAL JIT_FRSB JIT_FST JIT_FSTX JIT_FSUB JIT_GE JIT_GETARG JIT_GT JIT_HMUL JIT_JMP JIT_LABEL JIT_LD JIT_LDX JIT_LE JIT_LREG JIT_LSH JIT_LT JIT_MOD JIT_MOV JIT_MSG JIT_MUL JIT_NE JIT_NEG JIT_NOP JIT_NOT JIT_OR JIT_PATCH JIT_PREPARE JIT_PROLOG JIT_PUTARG JIT_RENAMEREG JIT_RET JIT_RETVAL JIT_ROUND JIT_RSB JIT_RSH JIT_ST JIT_STX JIT_SUB JIT_SUBC JIT_SUBX JIT_SYNCREG JIT_TRUNC JIT_UREG JIT_XOR JIT_X86_STI JIT_X86_STXI JIT_X86_ADDMUL JIT_X86_ADDIMM JIT_DATA_BYTE JIT_DATA_REF_CODE JIT_DATA_REF_DATA JIT_CODE_ALIGN JIT_REF_CODE JIT_REF_DATA JIT_FULL_SPILL JIT_COMMENT JIT_FORCE_SPILL JIT_FORCE_ASSOC JIT_TRACE)
+opcodes=(JIT_ADD JIT_ADDC JIT_ADDX JIT_ALLOCA JIT_AND JIT_BEQ JIT_BGE JIT_BGT JIT_BLE JIT_BLT JIT_BMC JIT_BMS JIT_BNE JIT_BOADD JIT_BOSUB JIT_BNOADD JIT_BNOSUB JIT_CALL JIT_CEIL JIT_CODESTART JIT_DECL_ARG JIT_DIV JIT_EQ JIT_EXT JIT_FADD JIT_FBEQ JIT_FBGE JIT_FBGT JIT_FBLE JIT_FBLT JIT_FBNE JIT_FDIV JIT_FLD JIT_FLDX JIT_FLOOR JIT_FMOV JIT_FMUL JIT_FNEG JIT_FPUTARG JIT_FRET JIT_FRETVAL JIT_FRSB JIT_FST JIT_FSTX JIT_FSUB JIT_GE JIT_GETARG JIT_GT JIT_HMUL JIT_JMP JIT_LABEL JIT_LD JIT_LDX JIT_LE JIT_LREG JIT_LSH JIT_LT JIT_MOD JIT_MOV JIT_MSG JIT_MUL JIT_NE JIT_NEG JIT_NOP JIT_NOT JIT_OR JIT_PATCH JIT_PREPARE JIT_PROLOG JIT_PUTARG JIT_RENAMEREG JIT_RET JIT_RETVAL JIT_ROUND JIT_RSB JIT_RSH JIT_ST JIT_STX JIT_SUB JIT_SUBC JIT_SUBX JIT_SYNCREG JIT_TRUNC JIT_UREG JIT_XOR JIT_X86_STI JIT_X86_STXI JIT_X86_ADDMUL JIT_X86_ADDIMM JIT_DATA_BYTE JIT_DATA_BYTES JIT_DATA_REF_CODE JIT_DATA_REF_DATA JIT_CODE_ALIGN JIT_REF_CODE JIT_REF_DATA JIT_FULL_SPILL JIT_COMMENT JIT_FORCE_SPILL JIT_FORCE_ASSOC JIT_TRACE JIT_MEMCPY JIT_MEMSET JIT_MARK JIT_TOUCH JIT_TRANSFER JIT_TRANSFER_CPY JIT_TRANSFER_XOR JIT_TRANSFER_AND JIT_TRANSFER_OR JIT_TRANSFER_ADD JIT_TRANSFER_ADDS JIT_TRANSFER_SUB JIT_TRANSFER_SUBS)
+
 
 size=${#opcodes[*]}
 max=$(( 32768 / size * size ))
@@ -1161,12 +1322,14 @@ echo "jit_opcode dummy_opcode;" >> "$TIGRESS_HOME/opcodes.c"
 cat "$TIGRESS_HOME/opcodes.c" "$TIGRESS_HOME/jitter_template-i386.c" > "$TIGRESS_HOME/jitter-i386.c"
 cat "$TIGRESS_HOME/opcodes.c" "$TIGRESS_HOME/jitter_template-amd64.c" > "$TIGRESS_HOME/jitter-amd64.c"
 cat "$TIGRESS_HOME/opcodes.c" "$TIGRESS_HOME/jitter_template-sparc.c" > "$TIGRESS_HOME/jitter-sparc.c"
+cat "$TIGRESS_HOME/opcodes.c" "$TIGRESS_HOME/jitter_template-arm32.c" > "$TIGRESS_HOME/jitter-arm32.c"
 
 
 ########################################################################################
 # Call cilly with the appropriate options.
 ########################################################################################
-$TIGRESS_HOME/cilly --bytecode --doObf $OPTIONS "$@"
+#$TIGRESS_HOME/cilly --bytecode --doObf $OPTIONS "$@"
+$TIGRESS_HOME/cilly --doObf $OPTIONS "$@"
 
 
 

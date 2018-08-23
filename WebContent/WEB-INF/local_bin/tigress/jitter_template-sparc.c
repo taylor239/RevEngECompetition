@@ -77,47 +77,23 @@ typedef struct jit_op {
  struct jit_debug_info *debug_info;
  unsigned long code_offset;
  unsigned long code_length;
+ void *addendum;
 } jit_op;
 typedef struct jit_label {
         long pos;
         jit_op * op;
         struct jit_label * next;
 } jit_label;
-typedef struct {
-        unsigned type: 1;
-        unsigned spec: 2;
-        unsigned part: 1;
-        unsigned id: 28;
-} jit_reg;
-static inline jit_value JIT_REG_TO_JIT_VALUE(jit_reg r)
+typedef jit_value jit_reg;
+union jit_proc_value_alias {
+        void (*ptr)();
+        jit_value num;
+};
+static inline jit_value jit_proc_value(void (*f)(void))
 {
-        jit_value v;
-        memcpy(&v, &r, sizeof(jit_reg));
-        return v;
-}
-static inline jit_reg JIT_REG(jit_value v)
-{
-        jit_reg r;
-        memcpy(&r, &v, sizeof(jit_value));
-        return r;
-}
-static inline jit_value jit_mkreg(int type, int spec, int id)
-{
- jit_reg r;
- r.type = type;
- r.spec = spec;
- r.id = id;
- r.part = 0;
- return JIT_REG_TO_JIT_VALUE(r);
-}
-static inline jit_value jit_mkreg_ex(int type, int spec, int id)
-{
- jit_reg r;
- r.type = type;
- r.spec = spec;
- r.id = id;
- r.part = 1;
- return JIT_REG_TO_JIT_VALUE(r);
+ union jit_proc_value_alias alias;
+ alias.ptr = f;
+ return alias.num;
 }
 enum jit_inp_type {
  JIT_SIGNED_NUM,
@@ -151,6 +127,15 @@ void jit_disable_optimization(struct jit * jit, int opt);
 jit_op * jit_add_prolog(struct jit *, void *, struct jit_debug_info *);
 jit_label * jit_get_label(struct jit * jit);
 int jit_allocai(struct jit * jit, int size);
+jit_op *jit_data_bytes(struct jit *jit, jit_value count, unsigned char *data)
+{
+ jit_op *op = jit_add_op(jit, JIT_DATA_BYTES | 0x02, (((0x00) << 4) | ((0x00) << 2) | (0x02)), count, 0, 0, 0, NULL);
+ op->addendum = malloc(count);
+ memcpy(op->addendum, data, count);
+ return op;
+}
+int jit_regs_active_count(jit_op *op);
+void jit_regs_active(jit_op *op, jit_value *dest);
 typedef jit_value jit_tree_key;
 typedef void * jit_tree_value;
 typedef struct jit_tree {
@@ -438,6 +423,7 @@ struct jit {
  jit_prepared_args prepared_args;
  int push_count;
  unsigned int optimizations;
+ unsigned char mmaped_buf;
 };
 struct jit_debug_info {
         const char *filename;
@@ -464,6 +450,7 @@ void jit_gen_op(struct jit * jit, jit_op * op);
 char * jit_reg_allocator_get_hwreg_name(struct jit_reg_allocator * al, int reg);
 int jit_reg_in_use(jit_op * op, int reg, int fp);
 jit_hw_reg * jit_get_unused_reg(struct jit_reg_allocator * al, jit_op * op, int fp);
+jit_hw_reg * jit_get_unused_reg_with_index(struct jit_reg_allocator * al, jit_op * op, int fp, int index);
 void jit_internal_rmap_free(jit_rmap * regmap);
 void jit_allocator_hints_free(jit_tree *);
 static struct jit_op * jit_op_new(unsigned short code, unsigned char spec, long arg1, long arg2, long arg3, unsigned char arg_size)
@@ -479,6 +466,7 @@ static struct jit_op * jit_op_new(unsigned short code, unsigned char spec, long 
  r->r_arg[1] = -1;
  r->r_arg[2] = -1;
  r->assigned = 0;
+ r->in_use = 1;
  r->arg_size = arg_size;
  r->next = NULL;
  r->prev = NULL;
@@ -489,6 +477,7 @@ static struct jit_op * jit_op_new(unsigned short code, unsigned char spec, long 
  r->live_out = NULL;
  r->allocator_hints = NULL;
  r->debug_info = NULL;
+ r->addendum = NULL;
  return r;
 }
 static inline void jit_op_append(jit_op * op, jit_op * appended)
@@ -582,7 +571,7 @@ static inline void jit_internal_funcall_fput_arg(struct jit * jit, jit_op * op)
  else arg->value.generic = op->arg[0];
  jit->prepared_args.ready++;
  if (jit->prepared_args.ready > jit->reg_al->fp_arg_reg_cnt) {
-  jit->prepared_args.stack_size += op->arg_size;
+  jit->prepared_args.stack_size += (sizeof(void *));
  }
 }
 static inline jit_value jit_value_align(jit_value value, jit_value alignment)
@@ -630,334 +619,570 @@ static inline int jit_set_size(jit_set *s)
 {
  return jit_tree_size(s->root);
 }
+struct copy_target {
+        jit_value *target;
+        int index;
+};
+static void jit_internal_copy_reg_to_array(jit_tree_key key, jit_tree_value value, void *target)
+{
+        struct copy_target *t = target;
+        t->target[t->index] = key;
+        t->index++;
+}
+static inline void jit_set_to_array(jit_set *s, jit_value *dest)
+{
+ struct copy_target t;
+ t.target = dest;
+ t.index = 0;
+ jit_tree_walk(s->root, jit_internal_copy_reg_to_array, &t);
+}
+typedef enum jit_amd64_gp_regs {
+ AMD64_RAX = 0,
+ AMD64_RCX = 1,
+ AMD64_RDX = 2,
+ AMD64_RBX = 3,
+ AMD64_RSP = 4,
+ AMD64_RBP = 5,
+ AMD64_RSI = 6,
+ AMD64_RDI = 7,
+ AMD64_R8 = 8,
+ AMD64_R9 = 9,
+ AMD64_R10 = 10,
+ AMD64_R11 = 11,
+ AMD64_R12 = 12,
+ AMD64_R13 = 13,
+ AMD64_R14 = 14,
+ AMD64_R15 = 15,
+ AMD64_RIP = 16,
+ AMD64_NREG
+} jit_internal_AMD64_Reg_No;
+typedef enum jit_amd64_fp_regs {
+ AMD64_XMM0 = 0,
+ AMD64_XMM1 = 1,
+ AMD64_XMM2 = 2,
+ AMD64_XMM3 = 3,
+ AMD64_XMM4 = 4,
+ AMD64_XMM5 = 5,
+ AMD64_XMM6 = 6,
+ AMD64_XMM7 = 7,
+ AMD64_XMM8 = 8,
+ AMD64_XMM9 = 9,
+ AMD64_XMM10 = 10,
+ AMD64_XMM11 = 11,
+ AMD64_XMM12 = 12,
+ AMD64_XMM13 = 13,
+ AMD64_XMM14 = 14,
+ AMD64_XMM15 = 15,
+ AMD64_XMM_NREG = 16,
+} jit_internal_AMD64_XMM_Reg_No;
+typedef enum
+{
+  AMD64_REX_B = 1,
+  AMD64_REX_X = 2,
+  AMD64_REX_R = 4,
+  AMD64_REX_W = 8
+} jit_internal_AMD64_REX_Bits;
+typedef union {
+ size_t val;
+ unsigned char b [8];
+} jit_internal_amd64_imm_buf;
+typedef enum jit_x86_gp_regs {
+ X86_EAX = 0,
+ X86_ECX = 1,
+ X86_EDX = 2,
+ X86_EBX = 3,
+ X86_ESP = 4,
+ X86_EBP = 5,
+ X86_ESI = 6,
+ X86_EDI = 7,
+ X86_NREG
+} jit_internal_X86_Reg_No;
+typedef enum jit_x86_fp_regs {
+ X86_XMM0,
+ X86_XMM1,
+ X86_XMM2,
+ X86_XMM3,
+ X86_XMM4,
+ X86_XMM5,
+ X86_XMM6,
+ X86_XMM7,
+ X86_XMM_NREG
+} jit_internal_X86_XMM_Reg_No;
 typedef enum {
- sparc_r0 = 0,
- sparc_r1 = 1,
- sparc_r2 = 2,
- sparc_r3 = 3,
- sparc_r4 = 4,
- sparc_r5 = 5,
- sparc_r6 = 6,
- sparc_r7 = 7,
- sparc_r8 = 8,
- sparc_r9 = 9,
- sparc_r10 = 10,
- sparc_r11 = 11,
- sparc_r12 = 12,
- sparc_r13 = 13,
- sparc_r14 = 14,
- sparc_r15 = 15,
- sparc_r16 = 16,
- sparc_r17 = 17,
- sparc_r18 = 18,
- sparc_r19 = 19,
- sparc_r20 = 20,
- sparc_r21 = 21,
- sparc_r22 = 22,
- sparc_r23 = 23,
- sparc_r24 = 24,
- sparc_r25 = 25,
- sparc_r26 = 26,
- sparc_r27 = 27,
- sparc_r28 = 28,
- sparc_r29 = 29,
- sparc_r30 = 30,
- sparc_r31 = 31,
- sparc_g0 = 0, sparc_zero = 0,
- sparc_g1 = 1,
- sparc_g2 = 2,
- sparc_g3 = 3,
- sparc_g4 = 4,
- sparc_g5 = 5,
- sparc_g6 = 6,
- sparc_g7 = 7,
- sparc_o0 = 8,
- sparc_o1 = 9,
- sparc_o2 = 10,
- sparc_o3 = 11,
- sparc_o4 = 12,
- sparc_o5 = 13,
- sparc_o6 = 14, sparc_sp = 14,
- sparc_o7 = 15, sparc_callsite = 15,
- sparc_l0 = 16,
- sparc_l1 = 17,
- sparc_l2 = 18,
- sparc_l3 = 19,
- sparc_l4 = 20,
- sparc_l5 = 21,
- sparc_l6 = 22,
- sparc_l7 = 23,
- sparc_i0 = 24,
- sparc_i1 = 25,
- sparc_i2 = 26,
- sparc_i3 = 27,
- sparc_i4 = 28,
- sparc_i5 = 29,
- sparc_i6 = 30, sparc_fp = 30,
- sparc_i7 = 31,
- sparc_nreg = 32,
- sparc_f0 = 0,
- sparc_f1 = 1,
- sparc_f2 = 2,
- sparc_f3 = 3,
- sparc_f4 = 4,
- sparc_f5 = 5,
- sparc_f6 = 6,
- sparc_f7 = 7,
- sparc_f8 = 8,
- sparc_f9 = 9,
- sparc_f10 = 10,
- sparc_f11 = 11,
- sparc_f12 = 12,
- sparc_f13 = 13,
- sparc_f14 = 14,
- sparc_f15 = 15,
- sparc_f16 = 16,
- sparc_f17 = 17,
- sparc_f18 = 18,
- sparc_f19 = 19,
- sparc_f20 = 20,
- sparc_f21 = 21,
- sparc_f22 = 22,
- sparc_f23 = 23,
- sparc_f24 = 24,
- sparc_f25 = 25,
- sparc_f26 = 26,
- sparc_f27 = 27,
- sparc_f28 = 28,
- sparc_f29 = 29,
- sparc_f30 = 30,
- sparc_f31 = 31,
-} jit_internal_SparcRegister;
+ X86_ADD = 0,
+ X86_OR = 1,
+ X86_ADC = 2,
+ X86_SBB = 3,
+ X86_AND = 4,
+ X86_SUB = 5,
+ X86_XOR = 6,
+ X86_CMP = 7,
+ X86_NALU
+} jit_internal_X86_ALU_Opcode;
 typedef enum {
- sparc_bn = 0, sparc_bnever = 0,
- sparc_be = 1,
- sparc_ble = 2,
- sparc_bl = 3,
- sparc_bleu = 4,
- sparc_bcs = 5, sparc_blu = 5,
- sparc_bneg = 6,
- sparc_bvs = 7, sparc_boverflow = 7,
- sparc_ba = 8, sparc_balways = 8,
- sparc_bne = 9,
- sparc_bg = 10,
- sparc_bge = 11,
- sparc_bgu = 12,
- sparc_bcc = 13, sparc_bgeu = 13,
- sparc_bpos = 14,
- sparc_bvc = 15, sparc_bnoverflow = 15
-} jit_internal_SparcCond;
+ X86_SHLD,
+ X86_SHLR,
+ X86_ROL = 0,
+ X86_ROR = 1,
+ X86_RCL = 2,
+ X86_RCR = 3,
+ X86_SHL = 4,
+ X86_SHR = 5,
+ X86_SAR = 7,
+ X86_NSHIFT = 8
+} jit_internal_X86_Shift_Opcode;
 typedef enum {
- sparc_feq = 0,
- sparc_fl = 1,
- sparc_fg = 2,
- sparc_unordered = 3,
- sparc_fba = 8,
- sparc_fbn = 0,
- sparc_fbu = 7,
- sparc_fbg = 6,
- sparc_fbug = 5,
- sparc_fbl = 4,
- sparc_fbul = 3,
- sparc_fblg = 2,
- sparc_fbne = 1,
- sparc_fbe = 9,
- sparc_fbue = 10,
- sparc_fbge = 11,
- sparc_fbuge = 12,
- sparc_fble = 13,
- sparc_fbule = 14,
- sparc_fbo = 15
-} jit_internal_SparcFCond;
+ X86_FADD = 0,
+ X86_FMUL = 1,
+ X86_FCOM = 2,
+ X86_FCOMP = 3,
+ X86_FSUB = 4,
+ X86_FSUBR = 5,
+ X86_FDIV = 6,
+ X86_FDIVR = 7,
+ X86_NFP = 8
+} jit_internal_X86_FP_Opcode;
 typedef enum {
- sparc_icc = 4,
-    sparc_xcc = 6,
-    sparc_fcc0 = 0,
- sparc_fcc1 = 1,
- sparc_fcc2 = 2,
- sparc_fcc3 = 3
-} jit_internal_SparcCC;
+ jit_internal_X86_CC_EQ = 0, jit_internal_X86_CC_E = 0, jit_internal_X86_CC_Z = 0,
+ jit_internal_X86_CC_NE = 1, jit_internal_X86_CC_NZ = 1,
+ jit_internal_X86_CC_LT = 2, jit_internal_X86_CC_B = 2, jit_internal_X86_CC_C = 2, jit_internal_X86_CC_NAE = 2,
+ jit_internal_X86_CC_LE = 3, jit_internal_X86_CC_BE = 3, jit_internal_X86_CC_NA = 3,
+ jit_internal_X86_CC_GT = 4, jit_internal_X86_CC_A = 4, jit_internal_X86_CC_NBE = 4,
+ jit_internal_X86_CC_GE = 5, jit_internal_X86_CC_AE = 5, jit_internal_X86_CC_NB = 5, jit_internal_X86_CC_NC = 5,
+ jit_internal_X86_CC_LZ = 6, jit_internal_X86_CC_S = 6,
+ jit_internal_X86_CC_GEZ = 7, jit_internal_X86_CC_NS = 7,
+ jit_internal_X86_CC_P = 8, jit_internal_X86_CC_PE = 8,
+ jit_internal_X86_CC_NP = 9, jit_internal_X86_CC_PO = 9,
+ jit_internal_X86_CC_O = 10,
+ jit_internal_X86_CC_NO = 11,
+ X86_NCC
+} jit_internal_X86_CC;
+enum {
+ X86_FP_C0 = 0x100,
+ X86_FP_C1 = 0x200,
+ X86_FP_C2 = 0x400,
+ X86_FP_C3 = 0x4000,
+ X86_FP_CC_MASK = 0x4500
+};
+enum {
+ X86_FPCW_INVOPEX_MASK = 0x1,
+ X86_FPCW_DENOPEX_MASK = 0x2,
+ X86_FPCW_ZERODIV_MASK = 0x4,
+ X86_FPCW_OVFEX_MASK = 0x8,
+ X86_FPCW_UNDFEX_MASK = 0x10,
+ X86_FPCW_PRECEX_MASK = 0x20,
+ X86_FPCW_PRECC_MASK = 0x300,
+ X86_FPCW_ROUNDC_MASK = 0xc00,
+ X86_FPCW_PREC_SINGLE = 0,
+ X86_FPCW_PREC_DOUBLE = 0x200,
+ X86_FPCW_PREC_EXTENDED = 0x300,
+ X86_FPCW_ROUND_NEAREST = 0,
+ X86_FPCW_ROUND_DOWN = 0x400,
+ X86_FPCW_ROUND_UP = 0x800,
+ X86_FPCW_ROUND_TOZERO = 0xc00
+};
 typedef enum {
- sparc_icc_short = 0,
-    sparc_xcc_short = 2
-} jit_internal_SparcCCShort;
+ X86_LOCK_PREFIX = 0xF0,
+ X86_REPNZ_PREFIX = 0xF2,
+ X86_REPZ_PREFIX = 0xF3,
+ X86_REP_PREFIX = 0xF3,
+ X86_CS_PREFIX = 0x2E,
+ X86_SS_PREFIX = 0x36,
+ X86_DS_PREFIX = 0x3E,
+ X86_ES_PREFIX = 0x26,
+ X86_FS_PREFIX = 0x64,
+ X86_GS_PREFIX = 0x65,
+ X86_UNLIKELY_PREFIX = 0x2E,
+ X86_LIKELY_PREFIX = 0x3E,
+ X86_OPERAND_PREFIX = 0x66,
+ X86_ADDRESS_PREFIX = 0x67
+} jit_internal_X86_Prefix;
+static const unsigned char
+jit_internal_x86_cc_unsigned_map [X86_NCC] = {
+ 0x74,
+ 0x75,
+ 0x72,
+ 0x76,
+ 0x77,
+ 0x73,
+ 0x78,
+ 0x79,
+ 0x7a,
+ 0x7b,
+ 0x70,
+ 0x71,
+};
+static const unsigned char
+jit_internal_x86_cc_signed_map [X86_NCC] = {
+ 0x74,
+ 0x75,
+ 0x7c,
+ 0x7e,
+ 0x7f,
+ 0x7d,
+ 0x78,
+ 0x79,
+ 0x7a,
+ 0x7b,
+ 0x70,
+ 0x71,
+};
+typedef union {
+ int val;
+ unsigned char b [4];
+} jit_internal_x86_imm_buf;
 typedef enum {
- sparc_fitos_val = 196,
- sparc_fitod_val = 200,
- sparc_fitoq_val = 204,
- sparc_fxtos_val = 132,
- sparc_fxtod_val = 136,
- sparc_fxtoq_val = 140,
- sparc_fstoi_val = 209,
- sparc_fdtoi_val = 210,
- sparc_fqtoi_val = 211,
- sparc_fstod_val = 201,
- sparc_fstoq_val = 205,
- sparc_fdtos_val = 198,
- sparc_fdtoq_val = 206,
- sparc_fqtos_val = 199,
- sparc_fqtod_val = 203,
- sparc_fmovs_val = 1,
- sparc_fmovd_val = 2,
- sparc_fnegs_val = 5,
- sparc_fnegd_val = 6,
- sparc_fabss_val = 9,
- sparc_fabsd_val = 10,
- sparc_fsqrts_val = 41,
- sparc_fsqrtd_val = 42,
- sparc_fsqrtq_val = 43,
- sparc_fadds_val = 65,
- sparc_faddd_val = 66,
- sparc_faddq_val = 67,
- sparc_fsubs_val = 69,
- sparc_fsubd_val = 70,
- sparc_fsubq_val = 71,
- sparc_fmuls_val = 73,
- sparc_fmuld_val = 74,
- sparc_fmulq_val = 75,
- sparc_fsmuld_val = 105,
- sparc_fdmulq_val = 111,
- sparc_fdivs_val = 77,
- sparc_fdivd_val = 78,
- sparc_fdivq_val = 79,
- sparc_fcmps_val = 81,
- sparc_fcmpd_val = 82,
- sparc_fcmpq_val = 83,
- sparc_fcmpes_val = 85,
- sparc_fcmped_val = 86,
- sparc_fcmpeq_val = 87
-} jit_internal_SparcFOp;
+ X86_SSE_SQRT = 0x51,
+ X86_SSE_RSQRT = 0x52,
+ X86_SSE_RCP = 0x53,
+ X86_SSE_ADD = 0x58,
+ X86_SSE_DIV = 0x5E,
+ X86_SSE_MUL = 0x59,
+ X86_SSE_SUB = 0x5C,
+ X86_SSE_MIN = 0x5D,
+ X86_SSE_MAX = 0x5F,
+ X86_SSE_COMP = 0xC2,
+ X86_SSE_AND = 0x54,
+ X86_SSE_ANDN = 0x55,
+ X86_SSE_OR = 0x56,
+ X86_SSE_XOR = 0x57,
+ X86_SSE_UNPCKL = 0x14,
+ X86_SSE_UNPCKH = 0x15,
+ X86_SSE_ADDSUB = 0xD0,
+ X86_SSE_HADD = 0x7C,
+ X86_SSE_HSUB = 0x7D,
+ X86_SSE_MOVSHDUP = 0x16,
+ X86_SSE_MOVSLDUP = 0x12,
+ X86_SSE_MOVDDUP = 0x12,
+ X86_SSE_SHUF = 0xC6,
+ X86_SSE_COMI = 0x2F,
+ X86_SSE_PAND = 0xDB,
+ X86_SSE_POR = 0xEB,
+ X86_SSE_PXOR = 0xEF,
+ X86_SSE_PADDB = 0xFC,
+ X86_SSE_PADDW = 0xFD,
+ X86_SSE_PADDD = 0xFE,
+ X86_SSE_PADDQ = 0xD4,
+ X86_SSE_PSUBB = 0xF8,
+ X86_SSE_PSUBW = 0xF9,
+ X86_SSE_PSUBD = 0xFA,
+ X86_SSE_PSUBQ = 0xFB,
+ X86_SSE_PMAXSB = 0x3C,
+ X86_SSE_PMAXSW = 0xEE,
+ X86_SSE_PMAXSD = 0x3D,
+ X86_SSE_PMAXUB = 0xDE,
+ X86_SSE_PMAXUW = 0x3E,
+ X86_SSE_PMAXUD = 0x3F,
+ X86_SSE_PMINSB = 0x38,
+ X86_SSE_PMINSW = 0xEA,
+ X86_SSE_PMINSD = 0x39,
+ X86_SSE_PMINUB = 0xDA,
+ X86_SSE_PMINUW = 0x3A,
+ X86_SSE_PMINUD = 0x3B,
+ X86_SSE_PAVGB = 0xE0,
+ X86_SSE_PAVGW = 0xE3,
+ X86_SSE_PCMPEQB = 0x74,
+ X86_SSE_PCMPEQW = 0x75,
+ X86_SSE_PCMPEQD = 0x76,
+ X86_SSE_PCMPEQQ = 0x29,
+ X86_SSE_PCMPGTB = 0x64,
+ X86_SSE_PCMPGTW = 0x65,
+ X86_SSE_PCMPGTD = 0x66,
+ X86_SSE_PCMPGTQ = 0x37,
+ X86_SSE_PSADBW = 0xf6,
+ X86_SSE_PSHUFD = 0x70,
+ X86_SSE_PUNPCKLBW = 0x60,
+ X86_SSE_PUNPCKLWD = 0x61,
+ X86_SSE_PUNPCKLDQ = 0x62,
+ X86_SSE_PUNPCKLQDQ = 0x6C,
+ X86_SSE_PUNPCKHBW = 0x68,
+ X86_SSE_PUNPCKHWD = 0x69,
+ X86_SSE_PUNPCKHDQ = 0x6A,
+ X86_SSE_PUNPCKHQDQ = 0x6D,
+ X86_SSE_PACKSSWB = 0x63,
+ X86_SSE_PACKSSDW = 0x6B,
+ X86_SSE_PACKUSWB = 0x67,
+ X86_SSE_PACKUSDW = 0x2B,
+ X86_SSE_PADDUSB = 0xDC,
+ X86_SSE_PADDUSW = 0xDD,
+ X86_SSE_PSUBUSB = 0xD8,
+ X86_SSE_PSUBUSW = 0xD9,
+ X86_SSE_PADDSB = 0xEC,
+ X86_SSE_PADDSW = 0xED,
+ X86_SSE_PSUBSB = 0xE8,
+ X86_SSE_PSUBSW = 0xE9,
+ X86_SSE_PMULLW = 0xD5,
+ X86_SSE_PMULLD = 0x40,
+ X86_SSE_PMULHUW = 0xE4,
+ X86_SSE_PMULHW = 0xE5,
+ X86_SSE_PMULUDQ = 0xF4,
+ X86_SSE_PMOVMSKB = 0xD7,
+ X86_SSE_PSHIFTW = 0x71,
+ X86_SSE_PSHIFTD = 0x72,
+ X86_SSE_PSHIFTQ = 0x73,
+ X86_SSE_SHR = 2,
+ X86_SSE_SAR = 4,
+ X86_SSE_SHL = 6,
+ X86_SSE_PSRLW_REG = 0xD1,
+ X86_SSE_PSRAW_REG = 0xE1,
+ X86_SSE_PSLLW_REG = 0xF1,
+ X86_SSE_PSRLD_REG = 0xD2,
+ X86_SSE_PSRAD_REG = 0xE2,
+ X86_SSE_PSLLD_REG = 0xF2,
+ X86_SSE_PSRLQ_REG = 0xD3,
+ X86_SSE_PSLLQ_REG = 0xF3,
+ X86_SSE_PREFETCH = 0x18,
+ X86_SSE_MOVNTPS = 0x2B,
+  X86_SSE_MOVHPD_REG_MEMBASE = 0x16,
+  X86_SSE_MOVHPD_MEMBASE_REG = 0x17,
+  X86_SSE_MOVSD_REG_MEMBASE = 0x10,
+  X86_SSE_MOVSD_MEMBASE_REG = 0x11,
+ X86_SSE_PINSRB = 0x20,
+ X86_SSE_PINSRW = 0xC4,
+ X86_SSE_PINSRD = 0x22,
+ X86_SSE_PEXTRB = 0x14,
+ X86_SSE_PEXTRW = 0xC5,
+ X86_SSE_PEXTRD = 0x16,
+} jit_internal_X86_SSE_Opcode;
 typedef enum {
- sparc_membar_load_load = 0x1,
- sparc_membar_store_load = 0x2,
- sparc_membar_load_store = 0x4,
- sparc_membar_store_store = 0x8,
- sparc_membar_lookaside = 0x10,
- sparc_membar_memissue = 0x20,
- sparc_membar_sync = 0x40,
-    sparc_membar_all = 0x4f
-} jit_internal_SparcMembarFlags;
-typedef struct {
- unsigned int op : 2;
- unsigned int disp : 30;
-} jit_internal_sparc_format1;
-typedef struct {
- unsigned int op : 2;
- unsigned int rd : 5;
- unsigned int op2 : 3;
- unsigned int disp : 22;
-} jit_internal_sparc_format2a;
-typedef struct {
- unsigned int op : 2;
- unsigned int a : 1;
- unsigned int cond : 4;
- unsigned int op2 : 3;
- unsigned int disp : 22;
-} jit_internal_sparc_format2b;
-typedef struct {
- unsigned int op : 2;
- unsigned int a : 1;
- unsigned int cond : 4;
- unsigned int op2 : 3;
- unsigned int cc01 : 2;
- unsigned int p : 1;
- unsigned int d19 : 19;
-} jit_internal_sparc_format2c;
-typedef struct {
- unsigned int op : 2;
- unsigned int a : 1;
- unsigned int res : 1;
- unsigned int rcond: 3;
- unsigned int op2 : 3;
- unsigned int d16hi: 2;
- unsigned int p : 1;
- unsigned int rs1 : 5;
- unsigned int d16lo: 14;
-} jit_internal_sparc_format2d;
-typedef struct {
- unsigned int op : 2;
- unsigned int rd : 5;
- unsigned int op3 : 6;
- unsigned int rs1 : 5;
- unsigned int i : 1;
- unsigned int asi : 8;
- unsigned int rs2 : 5;
-} jit_internal_sparc_format3a;
-typedef struct {
- unsigned int op : 2;
- unsigned int rd : 5;
- unsigned int op3 : 6;
- unsigned int rs1 : 5;
- unsigned int i : 1;
- unsigned int x : 1;
- unsigned int asi : 7;
- unsigned int rs2 : 5;
-} jit_internal_sparc_format3ax;
-typedef struct {
- unsigned int op : 2;
- unsigned int rd : 5;
- unsigned int op3 : 6;
- unsigned int rs1 : 5;
- unsigned int i : 1;
- unsigned int imm : 13;
-} jit_internal_sparc_format3b;
-typedef struct {
- unsigned int op : 2;
- unsigned int rd : 5;
- unsigned int op3 : 6;
- unsigned int rs1 : 5;
- unsigned int i : 1;
- unsigned int x : 1;
- unsigned int imm : 12;
-} jit_internal_sparc_format3bx;
-typedef struct {
- unsigned int op : 2;
- unsigned int rd : 5;
- unsigned int op3 : 6;
- unsigned int rs1 : 5;
- unsigned int opf : 9;
- unsigned int rs2 : 5;
-} jit_internal_sparc_format3c;
-typedef struct {
- unsigned int op : 2;
- unsigned int rd : 5;
- unsigned int op3 : 6;
- unsigned int rs1 : 5;
- unsigned int i : 1;
- unsigned int cc01 : 2;
- unsigned int res : 6;
- unsigned int rs2 : 5;
-} jit_internal_sparc_format4a;
-typedef struct {
- unsigned int op : 2;
- unsigned int rd : 5;
- unsigned int op3 : 6;
- unsigned int rs1 : 5;
- unsigned int i : 1;
- unsigned int cc01 : 2;
- unsigned int simm : 11;
-} jit_internal_sparc_format4b;
-typedef struct {
- unsigned int op : 2;
- unsigned int rd : 5;
- unsigned int op3 : 6;
- unsigned int cc2 : 1;
- unsigned int cond : 4;
- unsigned int i : 1;
- unsigned int cc01 : 2;
- unsigned int res : 6;
- unsigned int rs2 : 5;
-} jit_internal_sparc_format4c;
-typedef struct {
- unsigned int op : 2;
- unsigned int rd : 5;
- unsigned int op3 : 6;
- unsigned int cc2 : 1;
- unsigned int cond : 4;
- unsigned int i : 1;
- unsigned int cc01 : 2;
- unsigned int simm : 11;
-} jit_internal_sparc_format4d;
+ X86_SSE_CMP_EQ = 0,
+ X86_SSE_CMP_LT = 1,
+ X86_SSE_CMP_LE = 2,
+ X86_SSE_CMP_UNORD = 3,
+ X86_SSE_CMP_NEQ = 4,
+ X86_SSE_CMP_NLT = 5,
+ X86_SSE_CMP_NLE = 6,
+ X86_SSE_CMP_ORD = 7
+} jit_internal_X86_SSE_CmpCode;
+static inline int jit_internal__bit_pop(unsigned int x) {
+        x = (x & 0x55555555) + ((x >> 1) & 0x55555555);
+        x = (x & 0x33333333) + ((x >> 2) & 0x33333333);
+        x = (x & 0x0F0F0F0F) + ((x >> 4) & 0x0F0F0F0F);
+        x = (x & 0x00FF00FF) + ((x >> 8) & 0x00FF00FF);
+        x = (x & 0x0000FFFF) + ((x >>16) & 0x0000FFFF);
+        return x;
+}
+static int jit_internal_uses_hw_reg(struct jit_op * op, jit_value reg, int fp)
+{
+ if ((((jit_opcode) (op->code & 0xfff8)) == JIT_RENAMEREG) && (op->r_arg[0] == reg)) return 1;
+ for (int i = 0; i < 3; i++)
+  if (((((op)->spec >> ((i + 1) - 1) * 2) & 0x03) == 0x01) || ((((op)->spec >> ((i + 1) - 1) * 2) & 0x03) == 0x03)) {
+   if (fp && (((op->arg[i]) & 0x01) == (0))) continue;
+   if (!fp && (((op->arg[i]) & 0x01) == (1))) continue;
+   if (op->r_arg[i] == reg) return 1;
+  }
+ return 0;
+}
+static inline int jit_internal_is_spilled(jit_value arg_id, jit_op * prepare_op, int * reg);
+static int jit_internal_emit_push_callee_saved_regs(struct jit * jit, jit_op * op);
+static int jit_internal_emit_push_caller_saved_regs(struct jit * jit, jit_op * op);
+static int jit_internal_emit_pop_callee_saved_regs(struct jit * jit);
+static int jit_internal_emit_pop_caller_saved_regs(struct jit * jit, jit_op * op);
+static void jit_internal_emit_save_all_regs(struct jit *jit, jit_op *op);
+static void jit_internal_emit_restore_all_regs(struct jit *jit, jit_op *op);
+static jit_hw_reg * jit_internal_rmap_is_associated(jit_rmap * rmap, int reg_id, int fp, jit_value * virt_reg);
+static jit_hw_reg * jit_internal_rmap_get(jit_rmap * rmap, jit_value reg);
+static void jit_internal_sse_mov_reg_safeimm(struct jit * jit, jit_op * op, jit_value reg, double * imm)
+{
+ if (((jit_unsigned_value)imm) > 0xffffffffUL) {
+  jit_hw_reg * r = jit_get_unused_reg(jit->reg_al, op, 0);
+  if (r) {
+   do { int _amd64_width_temp = ((size_t)((jit_value)imm) == (size_t)(int)(size_t)((jit_value)imm)); do { do { unsigned char _amd64_rex_bits = (((((_amd64_width_temp ? 4 : 8))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((r->id))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((_amd64_width_temp ? 4 : 8))) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0xb8 + (((r->id)) & 0x7); if (((_amd64_width_temp ? 4 : 8)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(((jit_value)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; *(((jit->ip)))++ = imb.b [4]; *(((jit->ip)))++ = imb.b [5]; *(((jit->ip)))++ = imb.b [6]; *(((jit->ip)))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(((jit_value)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+   do { *(jit->ip)++ = (unsigned char)0xf2; do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((reg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((r->id)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x10; do { if (((r->id) & 0x7) == X86_ESP) { if (((0)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((0)) == 0 && ((r->id) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((((r->id) & 0x7))&0x07))); } while (0); break; } if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((((r->id) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((((r->id) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+  } else {
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RAX) & 0x7); } while (0);
+   do { int _amd64_width_temp = ((size_t)((jit_value)imm) == (size_t)(int)(size_t)((jit_value)imm)); do { do { unsigned char _amd64_rex_bits = (((((_amd64_width_temp ? 4 : 8))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RAX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((_amd64_width_temp ? 4 : 8))) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0xb8 + (((AMD64_RAX)) & 0x7); if (((_amd64_width_temp ? 4 : 8)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(((jit_value)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; *(((jit->ip)))++ = imb.b [4]; *(((jit->ip)))++ = imb.b [5]; *(((jit->ip)))++ = imb.b [6]; *(((jit->ip)))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(((jit_value)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+   do { *(jit->ip)++ = (unsigned char)0xf2; do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((reg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x10; do { if (((AMD64_RAX) & 0x7) == X86_ESP) { if (((0)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((0)) == 0 && ((AMD64_RAX) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((((AMD64_RAX) & 0x7))&0x07))); } while (0); break; } if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((((AMD64_RAX) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((reg) & 0x7))&0x07)<<3)|(((((AMD64_RAX) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RAX) & 0x7); } while (0);
+  }
+ } else {
+  do { *(jit->ip)++ = (unsigned char)0xf2; do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((reg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x10; do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((reg))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((jit_value)imm)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+ }
+}
+static void jit_internal_sse_alu_pd_reg_safeimm(struct jit * jit, jit_op * op, int op_id, int reg, double * imm)
+{
+ if (((jit_unsigned_value)imm) > 0xffffffffUL) {
+  jit_hw_reg * r = jit_get_unused_reg(jit->reg_al, op, 0);
+  if (r) {
+   do { int _amd64_width_temp = ((size_t)((long)imm) == (size_t)(int)(size_t)((long)imm)); do { do { unsigned char _amd64_rex_bits = (((((_amd64_width_temp ? 4 : 8))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((r->id))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((_amd64_width_temp ? 4 : 8))) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0xb8 + (((r->id)) & 0x7); if (((_amd64_width_temp ? 4 : 8)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(((long)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; *(((jit->ip)))++ = imb.b [4]; *(((jit->ip)))++ = imb.b [5]; *(((jit->ip)))++ = imb.b [6]; *(((jit->ip)))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(((long)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+   do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((reg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((r->id)) == AMD64_RIP ? 0 : ((r->id))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(op_id); do { if ((((r->id))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((reg)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((r->id)))&0x7) == X86_ESP) { if (((((0)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((0)))) == 0 && ((((r->id)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((r->id)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((r->id)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((r->id)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  } else {
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RAX) & 0x7); } while (0);
+   do { int _amd64_width_temp = ((size_t)((long)imm) == (size_t)(int)(size_t)((long)imm)); do { do { unsigned char _amd64_rex_bits = (((((_amd64_width_temp ? 4 : 8))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RAX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((_amd64_width_temp ? 4 : 8))) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0xb8 + (((AMD64_RAX)) & 0x7); if (((_amd64_width_temp ? 4 : 8)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(((long)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; *(((jit->ip)))++ = imb.b [4]; *(((jit->ip)))++ = imb.b [5]; *(((jit->ip)))++ = imb.b [6]; *(((jit->ip)))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(((long)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+   do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((reg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RAX)) == AMD64_RIP ? 0 : ((AMD64_RAX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(op_id); do { if ((((AMD64_RAX))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((reg)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RAX)))&0x7) == X86_ESP) { if (((((0)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((0)))) == 0 && ((((AMD64_RAX)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RAX)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RAX)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RAX)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RAX) & 0x7); } while (0);
+  }
+ } else {
+  do { *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((reg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)op_id; do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((reg))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((long)imm)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+ }
+}
+static void jit_internal_sse_alu_sd_reg_safeimm(struct jit * jit, jit_op * op, int op_id, int reg, double * imm)
+{
+ if (((jit_unsigned_value)imm) > 0xffffffffUL) {
+  jit_hw_reg * r = jit_get_unused_reg(jit->reg_al, op, 0);
+  if (r) {
+   do { int _amd64_width_temp = ((size_t)((long)imm) == (size_t)(int)(size_t)((long)imm)); do { do { unsigned char _amd64_rex_bits = (((((_amd64_width_temp ? 4 : 8))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((r->id))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((_amd64_width_temp ? 4 : 8))) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0xb8 + (((r->id)) & 0x7); if (((_amd64_width_temp ? 4 : 8)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(((long)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; *(((jit->ip)))++ = imb.b [4]; *(((jit->ip)))++ = imb.b [5]; *(((jit->ip)))++ = imb.b [6]; *(((jit->ip)))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(((long)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+   do { *((jit->ip))++ = (unsigned char)(0xf2); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((reg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((r->id)) == AMD64_RIP ? 0 : ((r->id))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(op_id); do { if ((((r->id))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((reg)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((r->id)))&0x7) == X86_ESP) { if (((((0)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((0)))) == 0 && ((((r->id)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((r->id)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((r->id)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((r->id)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  } else {
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RAX) & 0x7); } while (0);
+   do { int _amd64_width_temp = ((size_t)((long)imm) == (size_t)(int)(size_t)((long)imm)); do { do { unsigned char _amd64_rex_bits = (((((_amd64_width_temp ? 4 : 8))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RAX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((_amd64_width_temp ? 4 : 8))) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0xb8 + (((AMD64_RAX)) & 0x7); if (((_amd64_width_temp ? 4 : 8)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(((long)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; *(((jit->ip)))++ = imb.b [4]; *(((jit->ip)))++ = imb.b [5]; *(((jit->ip)))++ = imb.b [6]; *(((jit->ip)))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(((long)imm))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+   do { *((jit->ip))++ = (unsigned char)(0xf2); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((reg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RAX)) == AMD64_RIP ? 0 : ((AMD64_RAX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(op_id); do { if ((((AMD64_RAX))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((reg)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RAX)))&0x7) == X86_ESP) { if (((((0)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((0)))) == 0 && ((((AMD64_RAX)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RAX)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RAX)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RAX)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RAX) & 0x7); } while (0);
+  }
+ } else {
+  do { *(jit->ip)++ = (unsigned char)0xf2; do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((reg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)op_id; do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((reg))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((long)imm)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+ }
+}
+static unsigned char * jit_internal_emit_sse_get_sign_mask()
+{
+ static unsigned char bufx[32];
+ unsigned char * buf = bufx + 1;
+ while ((long)buf % 16) buf++;
+ unsigned long long * bit_mask = (unsigned long long *)buf;
+ *bit_mask = (unsigned long long)1 << 63;
+ return buf;
+}
+static void jit_internal_emit_sse_alu_op(struct jit * jit, jit_op * op, int sse_op)
+{
+ if (op->r_arg[0] == op->r_arg[1]) {
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((op->r_arg[0])))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((op->r_arg[2])))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((sse_op)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((op->r_arg[0])))))&0x07)<<3)|(((((((op->r_arg[2])))))&0x07))); } while (0); } while (0); } while (0);
+ } else if (op->r_arg[0] == op->r_arg[2]) {
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((op->r_arg[0])))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((op->r_arg[1])))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((sse_op)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((op->r_arg[0])))))&0x07)<<3)|(((((((op->r_arg[1])))))&0x07))); } while (0); } while (0); } while (0);
+ } else {
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((op->r_arg[0])))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((op->r_arg[1])))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x10)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((op->r_arg[0])))))&0x07)<<3)|(((((((op->r_arg[1])))))&0x07))); } while (0); } while (0); } while (0);
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((op->r_arg[0])))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((op->r_arg[2])))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((sse_op)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((op->r_arg[0])))))&0x07)<<3)|(((((((op->r_arg[2])))))&0x07))); } while (0); } while (0); } while (0);
+ }
+}
+static void jit_internal_emit_sse_change_sign(struct jit * jit, jit_op * op, int reg)
+{
+ jit_internal_sse_alu_pd_reg_safeimm(jit, op, X86_SSE_XOR, reg, (double *)jit_internal_emit_sse_get_sign_mask());
+}
+static void jit_internal_emit_sse_sub_op(struct jit * jit, jit_op * op, long a1, long a2, long a3)
+{
+ if (a1 == a2) {
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a3)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((X86_SSE_SUB)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a3)))))&0x07))); } while (0); } while (0); } while (0);
+ } else if (a1 == a3) {
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((X86_SSE_SUB)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0);
+  jit_internal_emit_sse_change_sign(jit, op, a1);
+ } else {
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x10)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0);
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a3)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((X86_SSE_SUB)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a3)))))&0x07))); } while (0); } while (0); } while (0);
+ }
+}
+static void jit_internal_emit_sse_div_op(struct jit * jit, long a1, long a2, long a3)
+{
+ if (a1 == a2) {
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a3)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((X86_SSE_DIV)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a3)))))&0x07))); } while (0); } while (0); } while (0);
+ } else if (a1 == a3) {
+  do { do { *((jit->ip))++ = (unsigned char)0x66; do { *(((jit->ip)))++ = (unsigned char)0x0F; *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0); } while (0); *(jit->ip)++ = (unsigned char)(0); } while (0);
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a2)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a3)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((X86_SSE_DIV)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((a3)))))&0x07))); } while (0); } while (0); } while (0);
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x10)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0);
+  do { do { *((jit->ip))++ = (unsigned char)0x66; do { *(((jit->ip)))++ = (unsigned char)0x0F; *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0); } while (0); *(jit->ip)++ = (unsigned char)(1); } while (0);
+ } else {
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x10)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0);
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a3)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((X86_SSE_DIV)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a3)))))&0x07))); } while (0); } while (0); } while (0);
+ }
+}
+static void jit_internal_emit_sse_neg_op(struct jit * jit, jit_op * op, long a1, long a2)
+{
+ if (a1 != a2) do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x10)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0);
+ jit_internal_emit_sse_change_sign(jit, op, a1);
+}
+static void jit_internal_emit_sse_branch(struct jit * jit, jit_op * op, long a1, long a2, long a3, int x86_cond)
+{
+        do { *(((jit->ip)))++ = (unsigned char)((0x66)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a2)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a3)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((X86_SSE_COMI)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((a3)))))&0x07))); } while (0); } while (0); } while (0);
+        op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
+        do { int offset = ((!jit_is_label(jit, (void *)(a1)) ? (a1) : (((jit_value)jit->buf + ((jit_label *)(a1))->pos - (jit_value)jit->ip)))) - 6; do { *((jit->ip))++ = (unsigned char)0x0f; if (((0))) *((jit->ip))++ = jit_internal_x86_cc_signed_map [((x86_cond))] + 0x10; else *((jit->ip))++ = jit_internal_x86_cc_unsigned_map [((x86_cond))] + 0x10; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((offset)); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+}
+static void jit_internal_emit_sse_round(struct jit * jit, jit_op * op, jit_value a1, jit_value a2)
+{
+ static const double x0 = 0.0;
+ static const double x05 = 0.5;
+ do { do { *(((jit->ip)))++ = (unsigned char)(((0x66))); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a2)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(((0x0f))); *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((0)) & 0xff); ++((jit->ip)); } while (0); } while (0);
+ jit_internal_sse_alu_pd_reg_safeimm(jit, op, X86_SSE_COMI, a2, (double *)&x0);
+ unsigned char * branch1 = jit->ip;
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { int offset = ((0)) - 2; if ((((int)((offset)) >= -128 && (int)((offset)) <= 127))) do { if ((((0)))) *(((jit->ip)))++ = jit_internal_x86_cc_signed_map [(((jit_internal_X86_CC_LT)))]; else *(((jit->ip)))++ = jit_internal_x86_cc_unsigned_map [(((jit_internal_X86_CC_LT)))]; do { *((((jit->ip)))) = (unsigned char)(((offset)) & 0xff); ++((((jit->ip)))); } while (0); } while (0); else { offset -= 4; do { *(((jit->ip)))++ = (unsigned char)0x0f; if ((((0)))) *(((jit->ip)))++ = jit_internal_x86_cc_signed_map [(((jit_internal_X86_CC_LT)))] + 0x10; else *(((jit->ip)))++ = jit_internal_x86_cc_unsigned_map [(((jit_internal_X86_CC_LT)))] + 0x10; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((offset)); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } while (0); } } while (0); } while (0);
+ jit_internal_sse_alu_sd_reg_safeimm(jit, op, X86_SSE_ADD, a2, (double *)&x05);
+ unsigned char * branch2 = jit->ip;
+ do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { int t = ((0)) - 2; if ((((int)(t) >= -128 && (int)(t) <= 127))) { do { *(((jit->ip)))++ = (unsigned char)0xeb; do { *((((jit->ip)))) = (unsigned char)(((t)) & 0xff); ++((((jit->ip)))); } while (0); } while (0); } else { t -= 3; do { *(((jit->ip)))++ = (unsigned char)0xe9; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((t)); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } while (0); } } while (0); } while (0);
+ do { unsigned char rex_correction = 0; if ((*((unsigned char*)(branch1)) & 0xf0) == 0x40) rex_correction++; unsigned char* pos = (branch1) + 1 + rex_correction; int disp, size = 0; switch (*((unsigned char*)(branch1) + rex_correction)) { case 0xe8: case 0xe9: ++size; break; case 0x0f: if (!(*pos >= 0x70 && *pos <= 0x8f)) assert (0); ++size; ++pos; break; case 0xe0: case 0xe1: case 0xe2: case 0xeb: case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: case 0x77: case 0x78: case 0x79: case 0x7a: case 0x7b: case 0x7c: case 0x7d: case 0x7e: case 0x7f: break; default: assert (0); } disp = (jit->ip) - pos; if (size) do { jit_internal_x86_imm_buf imb; imb.val = (int) (disp - 4); *(pos)++ = imb.b [0]; *(pos)++ = imb.b [1]; *(pos)++ = imb.b [2]; *(pos)++ = imb.b [3]; } while (0); else if ((((int)(disp - 1) >= -128 && (int)(disp - 1) <= 127))) do { *(pos) = (unsigned char)((disp - 1) & 0xff); ++(pos); } while (0); else assert (0); } while (0);
+ jit_internal_sse_alu_sd_reg_safeimm(jit, op, X86_SSE_SUB, a2, (double *)&x05);
+ do { unsigned char rex_correction = 0; if ((*((unsigned char*)(branch2)) & 0xf0) == 0x40) rex_correction++; unsigned char* pos = (branch2) + 1 + rex_correction; int disp, size = 0; switch (*((unsigned char*)(branch2) + rex_correction)) { case 0xe8: case 0xe9: ++size; break; case 0x0f: if (!(*pos >= 0x70 && *pos <= 0x8f)) assert (0); ++size; ++pos; break; case 0xe0: case 0xe1: case 0xe2: case 0xeb: case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: case 0x77: case 0x78: case 0x79: case 0x7a: case 0x7b: case 0x7c: case 0x7d: case 0x7e: case 0x7f: break; default: assert (0); } disp = (jit->ip) - pos; if (size) do { jit_internal_x86_imm_buf imb; imb.val = (int) (disp - 4); *(pos)++ = imb.b [0]; *(pos)++ = imb.b [1]; *(pos)++ = imb.b [2]; *(pos)++ = imb.b [3]; } while (0); else if ((((int)(disp - 1) >= -128 && (int)(disp - 1) <= 127))) do { *(pos) = (unsigned char)((disp - 1) & 0xff); ++(pos); } while (0); else assert (0); } while (0);
+ do { *(((jit->ip)))++ = (unsigned char)(0xf2); do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(0x0f); *(((jit->ip)))++ = (unsigned char)(0x2c); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0);
+ do { do { *(((jit->ip)))++ = (unsigned char)(((0x66))); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a2)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(((0x0f))); *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((1)) & 0xff); ++((jit->ip)); } while (0); } while (0);
+}
+static void jit_internal_emit_sse_floor(struct jit * jit, jit_value a1, jit_value a2, int floor)
+{
+ int tmp_reg = (a2 == X86_XMM7 ? X86_XMM0 : X86_XMM7);
+ do { do { *(((jit->ip)))++ = (unsigned char)(((0x66))); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a2)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(((0x0f))); *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((0)) & 0xff); ++((jit->ip)); } while (0); } while (0);
+ do { do { *(((jit->ip)))++ = (unsigned char)(((0x66))); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((tmp_reg)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((tmp_reg)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(((0x0f))); *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((tmp_reg)))))&0x07)<<3)|(((((((tmp_reg)))))&0x07))); } while (0); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((0)) & 0xff); ++((jit->ip)); } while (0); } while (0);
+ do { *(((jit->ip)))++ = (unsigned char)(0xf2); do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(0x0f); *(((jit->ip)))++ = (unsigned char)(0x2c); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0);
+ do { *(((jit->ip)))++ = (unsigned char)(0xf2); do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((((tmp_reg)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a1)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(0x0f); *(((jit->ip)))++ = (unsigned char)(0x2a); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((tmp_reg)))))&0x07)<<3)|(((((((a1)))))&0x07))); } while (0); } while (0); } while (0);
+ if (floor) {
+  do { *(((jit->ip)))++ = (unsigned char)((0x66)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a2)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((tmp_reg)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x2f)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((tmp_reg)))))&0x07))); } while (0); } while (0); } while (0);
+  do { if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SBB))))&0x07)<<3)|((((((a1))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else if (((a1)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SBB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SBB))))&0x07)<<3)|((((((a1))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ } else {
+  do { *(((jit->ip)))++ = (unsigned char)((0x66)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((tmp_reg)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x2f)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((tmp_reg)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0);
+  do { if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADC))))&0x07)<<3)|((((((a1))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else if (((a1)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_ADC))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADC))))&0x07)<<3)|((((((a1))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ }
+ do { do { *(((jit->ip)))++ = (unsigned char)(((0x66))); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a2)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(((0x0f))); *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((1)) & 0xff); ++((jit->ip)); } while (0); } while (0);
+ do { do { *(((jit->ip)))++ = (unsigned char)(((0x66))); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((tmp_reg)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((tmp_reg)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(((0x0f))); *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((tmp_reg)))))&0x07)<<3)|(((((((tmp_reg)))))&0x07))); } while (0); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((1)) & 0xff); ++((jit->ip)); } while (0); } while (0);
+}
+static void jit_internal_emit_sse_fst_op(struct jit * jit, jit_op * op, jit_value a1, jit_value a2)
+{
+ if (op->arg_size == sizeof(float)) {
+  int live = jit_set_get(op->live_out, op->arg[1]);
+  if (live) do { do { *(((jit->ip)))++ = (unsigned char)(((0x66))); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a2)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(((0x0f))); *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((0)) & 0xff); ++((jit->ip)); } while (0); } while (0);
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a2)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x5a)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0);
+  if ((op->code & 0x02)) do { *(jit->ip)++ = (unsigned char)0xf3; do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((a2)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x11; do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((a2))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a1)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+  else do { *(jit->ip)++ = (unsigned char)0xf3; do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((a2)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x11; do { if (((a1) & 0x7) == X86_ESP) { if (((0)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a2) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a2) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a2) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((0)) == 0 && ((a1) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a2) & 0x7))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); break; } if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a2) & 0x7))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a2) & 0x7))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+  if (live) do { do { *(((jit->ip)))++ = (unsigned char)(((0x66))); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a2)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(((0x0f))); *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a2)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((1)) & 0xff); ++((jit->ip)); } while (0); } while (0);
+ } else {
+  if ((op->code & 0x02)) do { *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((a2)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x13; do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((a2))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a1)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+  else do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((a2))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a1)) == AMD64_RIP ? 0 : ((a1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x13); do { if ((((a1))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a2)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((a1)))&0x7) == X86_ESP) { if (((((0)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a2)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a2)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a2)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((0)))) == 0 && ((((a1)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a2)))&0x7))&0x07)<<3)|(((((((a1)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a2)))&0x7))&0x07)<<3)|(((((((a1)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a2)))&0x7))&0x07)<<3)|(((((((a1)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ }
+}
+static void jit_internal_emit_sse_fld_op(struct jit * jit, jit_op * op, jit_value a1, jit_value a2)
+{
+ if (op->arg_size == sizeof(float)) {
+  if ((op->code & 0x02)) do { *(jit->ip)++ = (unsigned char)0xf3; do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x5a; do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((a1))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+  else do { *((jit->ip))++ = (unsigned char)(0xf3); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((a1))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a2)) == AMD64_RIP ? 0 : ((a2))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x5a); do { if ((((a2))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((a2)))&0x7) == X86_ESP) { if (((((0)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((0)))) == 0 && ((((a2)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ } else {
+  if ((op->code & 0x02)) do { *(jit->ip)++ = (unsigned char)0xf2; do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x10; do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((a1))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+  else do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((a1))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a2))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x12); do { if ((((a2))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((a2)))&0x7) == X86_ESP) { if (((((0)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((0)))) == 0 && ((((a2)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ }
+}
+static void jit_internal_emit_sse_fldx_op(struct jit * jit, jit_op * op, jit_value a1, jit_value a2, jit_value a3)
+{
+ if (op->arg_size == sizeof(float)) {
+  if ((op->code & 0x02)) do { *((jit->ip))++ = (unsigned char)(0xf3); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((a1))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a2)) == AMD64_RIP ? 0 : ((a2))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x5a); do { if ((((a2))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((a2)))&0x7) == X86_ESP) { if (((((a3)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((a3))))) >= -128 && (int)(((((a3))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((a3))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((a3))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((a3)))) == 0 && ((((a2)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((a3))))) >= -128 && (int)(((((a3))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((a3))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((a3))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  else do { *(jit->ip)++ = (unsigned char)0xf3; do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a3)) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x5a; do { if (((a2)) == (-1)) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else if (((0)) == 0 && ((a2)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3))&0x7)&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3))&0x7)&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3))&0x7)&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+ } else {
+  if ((op->code & 0x02)) do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((a1))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a2))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x12); do { if ((((a2))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((a2)))&0x7) == X86_ESP) { if (((((a3)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((a3))))) >= -128 && (int)(((((a3))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((a3))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((a3))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((a3)))) == 0 && ((((a2)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((a3))))) >= -128 && (int)(((((a3))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((a3))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a1)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((a3))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  else do { *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a3)) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x12; do { if (((a2)) == (-1)) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else if (((0)) == 0 && ((a2)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3))&0x7)&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3))&0x7)&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3))&0x7)&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+ }
+}
+static void jit_internal_emit_sse_fstx_op(struct jit * jit, jit_op * op, jit_value a1, jit_value a2, jit_value a3)
+{
+ if (op->arg_size == sizeof(float)) {
+  int live = jit_set_get(op->live_out, op->arg[2]);
+  if (live) do { do { *(((jit->ip)))++ = (unsigned char)(((0x66))); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a3)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a3)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(((0x0f))); *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a3)))))&0x07)<<3)|(((((((a3)))))&0x07))); } while (0); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((0)) & 0xff); ++((jit->ip)); } while (0); } while (0);
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a3)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a3)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x5a)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a3)))))&0x07)<<3)|(((((((a3)))))&0x07))); } while (0); } while (0); } while (0);
+  if ((op->code & 0x02)) do { *(jit->ip)++ = (unsigned char)0xf3; do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((a3)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x11; do { if (((a2) & 0x7) == X86_ESP) { if (((a1)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a3) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((a1))) >= -128 && (int)(((a1))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a3) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a1))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a3) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((a1)) == 0 && ((a2) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a3) & 0x7))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); break; } if ((((int)(((a1))) >= -128 && (int)(((a1))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a3) & 0x7))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a1))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a3) & 0x7))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+  else do { *(jit->ip)++ = (unsigned char)0xf3; do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a3)) > 7) ? AMD64_REX_R : 0) | ((((a2)) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x11; do { if (((a1)) == (-1)) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a3)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a2)))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else if (((0)) == 0 && ((a1)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a3)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a2))&0x7)&0x07)<<3)|((((((a1))&0x7))&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a3)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a2))&0x7)&0x07)<<3)|((((((a1))&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a3)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a2))&0x7)&0x07)<<3)|((((((a1))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+  if (live) do { do { *(((jit->ip)))++ = (unsigned char)(((0x66))); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a3)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a3)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(((0x0f))); *(((jit->ip)))++ = (unsigned char)(((X86_SSE_SHUF))); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a3)))))&0x07)<<3)|(((((((a3)))))&0x07))); } while (0); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((1)) & 0xff); ++((jit->ip)); } while (0); } while (0);
+ } else {
+  if ((op->code & 0x02)) do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((a3))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a2)) == AMD64_RIP ? 0 : ((a2))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x13); do { if ((((a2))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a3)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a1)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((a2)))&0x7) == X86_ESP) { if (((((a1)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a3)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((a1))))) >= -128 && (int)(((((a1))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a3)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((a1))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a3)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((a1))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((a1)))) == 0 && ((((a2)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((a3)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((a1))))) >= -128 && (int)(((((a1))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((a3)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((a1))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((a3)))&0x7))&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((a1))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  else do { *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a3)) > 7) ? AMD64_REX_R : 0) | ((((a2)) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x13; do { if (((a1)) == (-1)) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a3)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a2)))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else if (((0)) == 0 && ((a1)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a3)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a2))&0x7)&0x07)<<3)|((((((a1))&0x7))&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a3)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a2))&0x7)&0x07)<<3)|((((((a1))&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a3)))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a2))&0x7)&0x07)<<3)|((((((a1))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+ }
+}
+static inline int jit_internal_GET_REG_POS(struct jit * jit, int r)
+{
+ if ((((r) >> 1) & 0x03) == (0)) {
+  if (((r) & 0x01) == (0)) return (- (((((r) >> 4) & 0xfffffff) + 1) * (sizeof(void *))) - jit_current_func_info(jit)->allocai_mem);
+  else return (- jit_current_func_info(jit)->gp_reg_count * (sizeof(void *)) - ((((r) >> 4) & 0xfffffff) + 1) * sizeof(jit_float) - jit_current_func_info(jit)->allocai_mem);
+ } else return ((- ((((r) >> 4) & 0xfffffff) + jit_current_func_info(jit)->gp_reg_count + jit_current_func_info(jit)->fp_reg_count) * (sizeof(void *))) - jit_current_func_info(jit)->allocai_mem);
+}
 void jit_optimize_st_ops(struct jit * jit)
 {
  for (jit_op * op = jit_op_first(jit->ops); op != NULL; op = op->next) {
@@ -1161,299 +1386,967 @@ int jit_optimize_join_addimm(struct jit * jit)
  }
  return change;
 }
-inline jit_hw_reg * jit_internal_rmap_get(jit_rmap * rmap, jit_value reg);
-static inline int jit_internal_GET_REG_POS(struct jit * jit, int r)
-{
- struct jit_func_info * info = jit_current_func_info(jit);
- if (JIT_REG(r).spec == (0)) {
-  if (JIT_REG(r).type == (0)) {
-   return - (info->allocai_mem + (16) + JIT_REG(r).id * (sizeof(void *)) + (sizeof(void *)));
-  } else {
-   return - (info->allocai_mem + (16) + info->gp_reg_count * (sizeof(void *)) + JIT_REG(r).id * sizeof(double) + sizeof(double));
-  }
- }
- if (JIT_REG(r).spec == (3)) {
-  int arg_id = JIT_REG(r).id;
-  struct jit_inp_arg * a = &(jit_current_func_info(jit)->args[arg_id]);
-  return a->spill_pos;
- }
- assert(0);
-}
-static inline int jit_internal_space_for_outgoing_args(struct jit *jit, jit_op *op) {
- int passed_gp_args = 0;
- int passed_fp_args = 0;
- op = op->next;
- while (op && (((jit_opcode) (op->code & 0xfff8)) != JIT_PROLOG)) {
-  if (((jit_opcode) (op->code & 0xfff8)) == JIT_PREPARE) {
-   passed_gp_args = ((passed_gp_args) > (op->arg[0]) ? (passed_gp_args) : (op->arg[0]));
-   passed_fp_args = ((passed_fp_args) > (op->arg[1]) ? (passed_fp_args) : (op->arg[1]));
-  }
-  op = op->next;
- }
- int stack_gp_args = ((0) > (passed_gp_args - jit->reg_al->gp_arg_reg_cnt) ? (0) : (passed_gp_args - jit->reg_al->gp_arg_reg_cnt));
- int stack_fp_args = ((0) > (passed_fp_args - jit->reg_al->fp_arg_reg_cnt) ? (0) : (passed_fp_args - jit->reg_al->fp_arg_reg_cnt));
- return stack_gp_args * (sizeof(void *)) + stack_fp_args * sizeof(double);
-}
-int jit_allocai(struct jit * jit, int size)
-{
- int real_size = jit_value_align(size, 16);
- jit_add_op(jit, JIT_ALLOCA | 0x02, (((0x00) << 4) | ((0x00) << 2) | (0x02)), (long)real_size, 0, 0, 0, NULL);
- jit_current_func_info(jit)->allocai_mem += real_size;
- return -(jit_current_func_info(jit)->allocai_mem + (16));
-}
-static inline void jit_internal_init_arg(struct jit_inp_arg * arg, int p)
-{
- static const int in_regs[] = { sparc_i0, sparc_i1, sparc_i2, sparc_i3, sparc_i4, sparc_i5 };
- if (p < 6) {
-  arg->passed_by_reg = 1;
-  arg->location.reg = in_regs[p];
-  arg->spill_pos = 92 + (p - 6) * 4;
- } else {
-  arg->passed_by_reg = 0;
-  arg->location.stack_pos = 92 + (p - 6) * 4;
-  arg->spill_pos = arg->location.stack_pos;
- }
- arg->overflow = 0;
- arg->phys_reg = p;
-}
 void jit_init_arg_params(struct jit * jit, struct jit_func_info * info, int p, int * phys_reg)
 {
  struct jit_inp_arg * a = &(info->args[p]);
- jit_internal_init_arg(a, *phys_reg);
- *phys_reg = *phys_reg + 1;
- if ((a->type == JIT_FLOAT_NUM) && (a->size == sizeof(double))) {
-  a->overflow = 1;
-  *phys_reg = *phys_reg + 1;
+ if (a->type != JIT_FLOAT_NUM) {
+  int pos = a->gp_pos;
+  if (pos < jit->reg_al->gp_arg_reg_cnt) {
+   a->passed_by_reg = 1;
+   a->location.reg = jit->reg_al->gp_arg_regs[pos]->id;
+   a->spill_pos = ((- (p + info->gp_reg_count + info->fp_reg_count) * (sizeof(void *))) - jit_current_func_info(jit)->allocai_mem);
+  } else {
+   int stack_pos = (pos - jit->reg_al->gp_arg_reg_cnt) + ((0) > ((a->fp_pos - jit->reg_al->fp_arg_reg_cnt)) ? (0) : ((a->fp_pos - jit->reg_al->fp_arg_reg_cnt)));
+   a->location.stack_pos = 16 + stack_pos * 8;
+   a->spill_pos = 16 + stack_pos * 8;
+   a->passed_by_reg = 0;
+  }
+  a->overflow = 0;
+  return;
  }
+ int pos = a->fp_pos;
+ if (pos < jit->reg_al->fp_arg_reg_cnt) {
+  a->passed_by_reg = 1;
+  a->location.reg = jit->reg_al->fp_arg_regs[pos]->id;
+  a->spill_pos = ((- (p + info->gp_reg_count + info->fp_reg_count) * (sizeof(void *))) - jit_current_func_info(jit)->allocai_mem);
+ } else {
+  int stack_pos = (pos - jit->reg_al->fp_arg_reg_cnt) + ((0) > ((a->gp_pos - jit->reg_al->gp_arg_reg_cnt)) ? (0) : ((a->gp_pos - jit->reg_al->gp_arg_reg_cnt)));
+  a->location.stack_pos = 16 + stack_pos * 8;
+  a->spill_pos = 16 + stack_pos * 8;
+  a->passed_by_reg = 0;
+ }
+ a->overflow = 0;
 }
-static inline void jit_internal_emit_cond_op_op(struct jit * jit, struct jit_op * op, int cond, int imm)
+static inline void jit_internal_emit_set_arg(struct jit * jit, struct jit_out_arg * arg)
 {
- if (imm) {
-  if (op->r_arg[2] != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((((jit->ip)))); __f->op = (2); __f->imm = ((((op->r_arg[2])))); __f->i = 1; __f->rd = (((sparc_g0))); __f->rs1 = ((((op->r_arg[1])))); __f->op3 = (0x4|(((16)) ? 0x10 : 0)); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_g0))); __f->rs1 = ((((op->r_arg[1])))); __f->rs2 = ((((sparc_g0)))); __f->op3 = (0x4|(((16)) ? 0x10 : 0)); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_g0))); __f->rs1 = ((((op->r_arg[1])))); __f->rs2 = ((((op->r_arg[2])))); __f->op3 = (0x4|(((16)) ? 0x10 : 0)); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((0)); __f->i = 1; __f->rd = ((op->r_arg[0])); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format4d *__f = (jit_internal_sparc_format4d*)((jit->ip)); __f->op = (0x2); __f->rd = (op->r_arg[0]); __f->op3 = (0x2c); __f->cc2 = ((sparc_xcc) >> 2) & 0x1; __f->cond = cond; __f->i = 1; __f->cc01= (sparc_xcc) & 0x3; __f->simm = (1); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
+ int sreg;
+ int reg = jit->reg_al->gp_arg_regs[arg->argpos]->id;
+ jit_value value = arg->value.generic;
+ if (arg->isreg) {
+  if (jit_internal_is_spilled(value, jit->prepared_args.op, &sreg)) {
+   do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((reg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((AMD64_RBP)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((reg))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((jit_internal_GET_REG_POS(jit, value)))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((AMD64_RBP))&0x7) == X86_ESP) { if ((((jit_internal_GET_REG_POS(jit, value)))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((reg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((jit_internal_GET_REG_POS(jit, value))))) >= -128 && (int)((((jit_internal_GET_REG_POS(jit, value))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((reg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((jit_internal_GET_REG_POS(jit, value))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((reg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((jit_internal_GET_REG_POS(jit, value))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((jit_internal_GET_REG_POS(jit, value)))) == 0 && (((AMD64_RBP))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((reg))&0x7))&0x07)<<3)|((((((AMD64_RBP))&0x7))&0x07))); } while (0); break; } if ((((int)((((jit_internal_GET_REG_POS(jit, value))))) >= -128 && (int)((((jit_internal_GET_REG_POS(jit, value))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((reg))&0x7))&0x07)<<3)|((((((AMD64_RBP))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((jit_internal_GET_REG_POS(jit, value))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((reg))&0x7))&0x07)<<3)|((((((AMD64_RBP))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((jit_internal_GET_REG_POS(jit, value))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  } else {
+   if (reg != sreg) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((reg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((sreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((reg)))&0x07)<<3)|(((((sreg)))&0x07))); } while (0); } while (0); } while (0);
+  }
+ } else do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((reg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((reg) & 0x7); if ((8) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(value)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(value)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
 }
-static inline void jit_internal_emit_branch_op(struct jit * jit, struct jit_op * op, int cond, int imm)
+static inline void jit_internal_emit_set_fparg(struct jit * jit, struct jit_out_arg * arg)
 {
- if (imm) {
-  if (op->r_arg[2] != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((((jit->ip)))); __f->op = (2); __f->imm = ((((op->r_arg[2])))); __f->i = 1; __f->rd = (((sparc_g0))); __f->rs1 = ((((op->r_arg[1])))); __f->op3 = (0x4|(((16)) ? 0x10 : 0)); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_g0))); __f->rs1 = ((((op->r_arg[1])))); __f->rs2 = ((((sparc_g0)))); __f->op3 = (0x4|(((16)) ? 0x10 : 0)); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_g0))); __f->rs1 = ((((op->r_arg[1])))); __f->rs2 = ((((op->r_arg[2])))); __f->op3 = (0x4|(((16)) ? 0x10 : 0)); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
- do { jit_internal_sparc_format2b *__f = (jit_internal_sparc_format2b*)((jit->ip)); __f->op = 0; __f->a = (((0))); __f->cond = ((cond)); __f->op2 = (2); __f->disp = (((!jit_is_label(jit, (void *)(op->r_arg[0])) ? (op->r_arg[0]) : ((((long)jit->buf + (long)((jit_label *)(op->r_arg[0]))->pos - (long)jit->ip)) / 4)))); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-}
-static inline void jit_internal_emit_branch_mask_op(struct jit * jit, struct jit_op * op, int cond, int imm)
-{
- if (imm) {
-  if (op->r_arg[2] != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((op->r_arg[2])); __f->i = 1; __f->rd = ((sparc_g0)); __f->rs1 = ((op->r_arg[1])); __f->op3 = (((16) ? 0x10 : 0) | (1)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((sparc_g0)); __f->rs1 = ((op->r_arg[1])); __f->rs2 = ((sparc_g0)); __f->op3 = (((16) ? 0x10 : 0) | (1)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((sparc_g0)); __f->rs1 = ((op->r_arg[1])); __f->rs2 = ((op->r_arg[2])); __f->op3 = (((16) ? 0x10 : 0) | (1)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
- do { jit_internal_sparc_format2b *__f = (jit_internal_sparc_format2b*)((jit->ip)); __f->op = 0; __f->a = (((0))); __f->cond = ((cond)); __f->op2 = (2); __f->disp = (((!jit_is_label(jit, (void *)(op->r_arg[0])) ? (op->r_arg[0]) : ((((long)jit->buf + (long)((jit_label *)(op->r_arg[0]))->pos - (long)jit->ip)) / 4)))); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-}
-static inline void jit_internal_emit_op_and_overflow_branch(struct jit * jit, struct jit_op * op, int alu_op, int imm, int negation)
-{
- long a1 = op->r_arg[0];
- long a2 = op->r_arg[1];
- long a3 = op->r_arg[2];
- if (imm) {
-  switch (alu_op) {
-   case JIT_ADD: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a2))); __f->rs1 = (((a2))); __f->op3 = (0|(((16)) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-   case JIT_SUB: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a2))); __f->rs1 = (((a2))); __f->op3 = (0x4|(((16)) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-   default: assert(0);
+ int sreg;
+ int reg = jit->reg_al->fp_arg_regs[arg->argpos]->id;
+ long value = arg->value.generic;
+ if (arg->isreg) {
+  if (jit_internal_is_spilled(value, jit->prepared_args.op, &sreg)) {
+   int pos = jit_internal_GET_REG_POS(jit, value);
+   if (arg->size == sizeof(float))
+    do { *((jit->ip))++ = (unsigned char)(0xf2); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((reg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RBP)) == AMD64_RIP ? 0 : ((AMD64_RBP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x5a); do { if ((((AMD64_RBP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((reg)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RBP)))&0x7) == X86_ESP) { if (((((pos)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((pos))))) >= -128 && (int)(((((pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((pos)))) == 0 && ((((AMD64_RBP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((pos))))) >= -128 && (int)(((((pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+   else do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((reg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RBP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x12); do { if ((((AMD64_RBP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((reg)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RBP)))&0x7) == X86_ESP) { if (((((pos)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((pos))))) >= -128 && (int)(((((pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((pos)))) == 0 && ((((AMD64_RBP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((pos))))) >= -128 && (int)(((((pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  } else {
+   if (arg->size == sizeof(float))
+    do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((reg)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((sreg)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x5a)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((reg)))))&0x07)<<3)|(((((((sreg)))))&0x07))); } while (0); } while (0); } while (0);
+   else if (reg != sreg) do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((reg)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((sreg)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x10)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((reg)))))&0x07)<<3)|(((((((sreg)))))&0x07))); } while (0); } while (0); } while (0);
   }
  } else {
-  switch (alu_op) {
-   case JIT_ADD: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a2))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0|(((16)) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-   case JIT_SUB: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a2))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0x4|(((16)) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-   default: assert(0);
-  }
- }
- op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
- if (!negation) do { jit_internal_sparc_format2b *__f = (jit_internal_sparc_format2b*)((jit->ip)); __f->op = 0; __f->a = (((0))); __f->cond = ((sparc_boverflow)); __f->op2 = (2); __f->disp = (((!jit_is_label(jit, (void *)(a1)) ? (a1) : ((((long)jit->buf + (long)((jit_label *)(a1))->pos - (long)jit->ip)) / 4)))); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- else do { jit_internal_sparc_format2b *__f = (jit_internal_sparc_format2b*)((jit->ip)); __f->op = 0; __f->a = (((0))); __f->cond = ((sparc_bnoverflow)); __f->op2 = (2); __f->disp = (((!jit_is_label(jit, (void *)(a1)) ? (a1) : ((((long)jit->buf + (long)((jit_label *)(a1))->pos - (long)jit->ip)) / 4)))); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-}
-static inline void jit_internal_emit_fpbranch_op(struct jit * jit, struct jit_op * op, int cond, int arg1, int arg2)
-{
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fcmpd_val)); __f->rd = (0); __f->rs1 = ((arg1)); __f->rs2 = ((arg2)); __f->op3 = (53); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
- do { jit_internal_sparc_format2b *__f = (jit_internal_sparc_format2b*)((jit->ip)); __f->op = 0; __f->a = (((0))); __f->cond = ((cond)); __f->op2 = (6); __f->disp = (((!jit_is_label(jit, (void *)(op->r_arg[0])) ? (op->r_arg[0]) : ((((long)jit->buf + (long)((jit_label *)(op->r_arg[0]))->pos - (long)jit->ip)) / 4)))); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-}
-static inline int jit_internal_is_spilled(int arg_id, jit_op * prepare_op, int * reg)
-{
- jit_hw_reg * hreg = jit_internal_rmap_get(prepare_op->regmap, arg_id);
- if (hreg) {
-  *reg = hreg->id;
-  return 0;
- }
- return 1;
-}
-static const int jit_internal_OUT_REGS[] = { sparc_o0, sparc_o1, sparc_o2, sparc_o3, sparc_o4, sparc_o5 };
-static inline void jit_internal_emit_set_arg_imm(struct jit * jit, int value, int slot)
-{
- if (slot < 6) do { if ((value) == 0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((jit_internal_OUT_REGS[slot])))); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((uint32_t)(value) & 0x3ff) == 0) do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((jit_internal_OUT_REGS[slot]))); __f->op2 = (4); __f->disp = ((((uint32_t)(value))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((int32_t)(value) >= -4096) && ((int32_t)(value) <= 4095)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((int32_t)(value))); __f->i = 1; __f->rd = (((jit_internal_OUT_REGS[slot]))); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((jit_internal_OUT_REGS[slot]))); __f->op2 = (4); __f->disp = ((((uint32_t)(value))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)(value)&0x3ff)); __f->i = 1; __f->rd = (((jit_internal_OUT_REGS[slot]))); __f->rs1 = (((jit_internal_OUT_REGS[slot]))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0); } while (0);
- else {
-  do { if ((value) == 0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((sparc_g1)))); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((uint32_t)(value) & 0x3ff) == 0) do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)(value))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((int32_t)(value) >= -4096) && ((int32_t)(value) <= 4095)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((int32_t)(value))); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)(value))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)(value)&0x3ff)); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0); } while (0);
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((92 + (slot - 6) * 4)); __f->i = 1; __f->rd = ((sparc_g1)); __f->rs1 = ((sparc_sp)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- }
-}
-static inline void jit_internal_emit_set_arg_reg(struct jit * jit, int sreg, int slot)
-{
- if (slot < 6) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((jit_internal_OUT_REGS[slot]))); __f->rs1 = ((sparc_g0)); __f->rs2 = (((sreg))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- else do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((92 + (slot - 6) * 4)); __f->i = 1; __f->rd = ((sreg)); __f->rs1 = ((sparc_sp)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-}
-static inline void jit_internal_emit_set_arg_freg(struct jit * jit, int sreg, int slot)
-{
- if (slot < 6) {
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((sreg)); __f->rs1 = ((sparc_fp)); __f->op3 = (36); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((jit_internal_OUT_REGS[slot])); __f->rs1 = ((sparc_fp)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- } else do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((92 + (slot - 6) * 4)); __f->i = 1; __f->rd = ((sreg)); __f->rs1 = ((sparc_sp)); __f->op3 = (36); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-}
-static inline void jit_internal_emit_set_arg_mem(struct jit * jit, int disp, int slot)
-{
- if (slot < 6) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((disp)); __f->i = 1; __f->rd = ((jit_internal_OUT_REGS[slot])); __f->rs1 = ((sparc_fp)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- else {
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((disp)); __f->i = 1; __f->rd = ((sparc_g1)); __f->rs1 = ((sparc_fp)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((92 + (slot - 6) * 4)); __f->i = 1; __f->rd = ((sparc_g1)); __f->rs1 = ((sparc_sp)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- }
-}
-static inline void jit_internal_emit_arguments(struct jit * jit)
-{
- int assoc_gp = 0;
- int sreg = 0;
- for (int i = 0; i < jit->prepared_args.count; i++) {
-  struct jit_out_arg * arg = &(jit->prepared_args.args[i]);
-  long value = arg->value.generic;
-  if (!arg->isfp) {
-   if (arg->isreg) {
-    if (jit_internal_is_spilled(value, jit->prepared_args.op, &sreg))
-     jit_internal_emit_set_arg_mem(jit, jit_internal_GET_REG_POS(jit, value), assoc_gp++);
-    else jit_internal_emit_set_arg_reg(jit, sreg, assoc_gp++);
-   } else jit_internal_emit_set_arg_imm(jit, value, assoc_gp++);
-   continue;
-  }
   if (arg->size == sizeof(float)) {
-   if (arg->isreg) {
-    if (jit_internal_is_spilled(value, jit->prepared_args.op, &sreg)) {
-     do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((jit_internal_GET_REG_POS(jit, value))); __f->i = 1; __f->rd = ((sparc_f30)); __f->rs1 = ((sparc_fp)); __f->op3 = (35); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     sreg = sparc_f30;
-    }
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fdtos_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((sreg)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    jit_internal_emit_set_arg_freg(jit, sparc_f30, assoc_gp++);
+   float val = (float)arg->value.fp;
+   unsigned int tmp;
+   memcpy(&tmp, &val, sizeof(float));
+   do { do { unsigned char _amd64_rex_bits = ((((4)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((4)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RAX) & 0x7); if ((4) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(tmp)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(tmp)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+   do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = ((((4)) > 4) ? AMD64_REX_W : 0) | (((((reg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RAX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((4)) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x6e); do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((reg))))&0x07)<<3)|((((((AMD64_RAX))))&0x07))); } while (0); } while (0); } while (0);
+  } else {
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RAX) & 0x7); if ((8) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(value)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(value)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+   do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((((reg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RAX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x6e); do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((reg))))&0x07)<<3)|((((((AMD64_RAX))))&0x07))); } while (0); } while (0); } while (0);
+  }
+ }
+}
+static inline void jit_internal_emit_push_arg(struct jit * jit, struct jit_out_arg * arg)
+{
+ int sreg;
+ if (arg->isreg) {
+  if (jit_internal_is_spilled(arg->value.generic, jit->prepared_args.op, &sreg))
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xff; do { if (((AMD64_RBP) & 0x7) == X86_ESP) { if (((jit_internal_GET_REG_POS(jit, arg->value.generic))) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((6))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((jit_internal_GET_REG_POS(jit, arg->value.generic)))) >= -128 && (int)(((jit_internal_GET_REG_POS(jit, arg->value.generic)))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((6))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((jit_internal_GET_REG_POS(jit, arg->value.generic)))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((6))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((jit_internal_GET_REG_POS(jit, arg->value.generic)))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((jit_internal_GET_REG_POS(jit, arg->value.generic))) == 0 && ((AMD64_RBP) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((6))&0x07)<<3)|(((((AMD64_RBP) & 0x7))&0x07))); } while (0); break; } if ((((int)(((jit_internal_GET_REG_POS(jit, arg->value.generic)))) >= -128 && (int)(((jit_internal_GET_REG_POS(jit, arg->value.generic)))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((6))&0x07)<<3)|(((((AMD64_RBP) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((jit_internal_GET_REG_POS(jit, arg->value.generic)))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((6))&0x07)<<3)|(((((AMD64_RBP) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((jit_internal_GET_REG_POS(jit, arg->value.generic)))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+  else do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((sreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((sreg) & 0x7); } while (0);
+ } else {
+  do { do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RAX) & 0x7); if (((sizeof(void *))) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(arg->value.generic)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(arg->value.generic)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RAX) & 0x7); } while (0);
+ }
+}
+static inline void jit_internal_emit_fppush_arg(struct jit * jit, struct jit_out_arg * arg)
+{
+ int sreg;
+ if (arg->size == sizeof(double)) {
+  if (arg->isreg) {
+   if (jit_internal_is_spilled(arg->value.generic, jit->prepared_args.op, &sreg)) {
+    int pos = (- jit_current_func_info(jit)->gp_reg_count * (sizeof(void *)) - ((((arg->value.generic) >> 4) & 0xfffffff) + 1) * sizeof(jit_float) - jit_current_func_info(jit)->allocai_mem);
+    do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xff; do { if (((AMD64_RBP) & 0x7) == X86_ESP) { if (((pos)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((6))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((pos))) >= -128 && (int)(((pos))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((6))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((pos))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((6))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((pos)) == 0 && ((AMD64_RBP) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((6))&0x07)<<3)|(((((AMD64_RBP) & 0x7))&0x07))); } while (0); break; } if ((((int)(((pos))) >= -128 && (int)(((pos))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((6))&0x07)<<3)|(((((AMD64_RBP) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((pos))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((6))&0x07)<<3)|(((((AMD64_RBP) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
    } else {
-    float fl = (float)arg->value.fp;
-    int fl_val;
-    memcpy(&fl_val, &fl, sizeof(float));
-    jit_internal_emit_set_arg_imm(jit, fl_val, assoc_gp++);
+    do { if ((((int)(((8))) >= -128 && (int)(((8))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((8))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+    do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((sreg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP)) == AMD64_RIP ? 0 : ((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x13); do { if ((((AMD64_RSP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((sreg)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RSP)))&0x7) == X86_ESP) { if (((((0)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((sreg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((sreg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((sreg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((0)))) == 0 && ((((AMD64_RSP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((sreg)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((sreg)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((sreg)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
    }
   } else {
-   if (arg->isreg) {
-    long value = arg->value.generic;
-    if (jit_internal_is_spilled(value, jit->prepared_args.op, &sreg)) {
-     do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((jit_internal_GET_REG_POS(jit, value))); __f->i = 1; __f->rd = ((sparc_f30)); __f->rs1 = ((sparc_fp)); __f->op3 = (35); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     sreg = sparc_f30;
-    }
-    jit_internal_emit_set_arg_freg(jit, sreg, assoc_gp++);
-    jit_internal_emit_set_arg_freg(jit, sreg + 1, assoc_gp++);
-   } else {
-    int fl_val[2];
-    memcpy(fl_val, &(arg->value.fp), sizeof(double));
-    jit_internal_emit_set_arg_imm(jit, fl_val[0], assoc_gp++);
-    jit_internal_emit_set_arg_imm(jit, fl_val[1], assoc_gp++);
-   }
+   double b = arg->value.fp;
+   unsigned long tmp;
+   memcpy(&tmp, &b, sizeof(double));
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RAX) & 0x7); if ((8) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(tmp)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(tmp)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RAX) & 0x7); } while (0);
   }
- }
-}
-static inline void jit_internal_emit_funcall(struct jit * jit, struct jit_op * op, int imm)
-{
- jit_internal_emit_arguments(jit);
- if (!imm) {
-  do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((sparc_o7)); __f->rs1 = (((op->r_arg[0]))); __f->rs2 = (((sparc_g0))); __f->op3 = (56); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
  } else {
-  op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
-  if (op->r_arg[0] == (long)(NULL)) {
-   do { jit_internal_sparc_format1 *__f = (jit_internal_sparc_format1*)((jit->ip)); __f->op = 1; __f->disp = ((unsigned int)(((unsigned int)(0))) >> 2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  } else if (jit_is_label(jit, (void *)op->r_arg[0]))
-   do { jit_internal_sparc_format1 *__f = (jit_internal_sparc_format1*)((jit->ip)); __f->op = 1; __f->disp = ((unsigned int)(((unsigned int)(((long)jit->buf - (long)jit->ip) + (long)((jit_label *)(op->r_arg[0]))->pos))) >> 2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  else {
-   do { jit_internal_sparc_format1 *__f = (jit_internal_sparc_format1*)((jit->ip)); __f->op = 1; __f->disp = ((unsigned int)(((unsigned int)((long)op->r_arg[0] - (long)jit->ip))) >> 2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
+  if (arg->isreg) {
+   if (jit_internal_is_spilled(arg->value.generic, jit->prepared_args.op, &sreg)) {
+    do { *((jit->ip))++ = (unsigned char)(0xf2); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((AMD64_XMM0))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RBP)) == AMD64_RIP ? 0 : ((AMD64_RBP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x5a); do { if ((((AMD64_RBP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((AMD64_XMM0)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((jit_internal_GET_REG_POS(jit, arg->value.generic))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RBP)))&0x7) == X86_ESP) { if (((((jit_internal_GET_REG_POS(jit, arg->value.generic))))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((jit_internal_GET_REG_POS(jit, arg->value.generic)))))) >= -128 && (int)(((((jit_internal_GET_REG_POS(jit, arg->value.generic)))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((jit_internal_GET_REG_POS(jit, arg->value.generic)))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((jit_internal_GET_REG_POS(jit, arg->value.generic)))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((jit_internal_GET_REG_POS(jit, arg->value.generic))))) == 0 && ((((AMD64_RBP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((jit_internal_GET_REG_POS(jit, arg->value.generic)))))) >= -128 && (int)(((((jit_internal_GET_REG_POS(jit, arg->value.generic)))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((jit_internal_GET_REG_POS(jit, arg->value.generic)))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((jit_internal_GET_REG_POS(jit, arg->value.generic)))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+   } else {
+    do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((AMD64_XMM0)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((sreg)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x5a)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((AMD64_XMM0)))))&0x07)<<3)|(((((((sreg)))))&0x07))); } while (0); } while (0); } while (0);
+   }
+   do { if ((((int)(((8))) >= -128 && (int)(((8))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((8))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+   do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((AMD64_XMM0))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP)) == AMD64_RIP ? 0 : ((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x13); do { if ((((AMD64_RSP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((AMD64_XMM0)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RSP)))&0x7) == X86_ESP) { if (((((0)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((0)))) == 0 && ((((AMD64_RSP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((AMD64_XMM0)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  } else {
+   float b = arg->value.fp;
+   unsigned long tmp = 0;
+   memcpy(&tmp, &b, sizeof(float));
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RAX) & 0x7); if ((8) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(tmp)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(tmp)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RAX) & 0x7); } while (0);
   }
  }
- do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
 }
-static void jit_internal_emit_get_arg_int(struct jit * jit, struct jit_inp_arg * arg, int dest_reg, int associated)
+static inline int jit_internal_emit_arguments(struct jit * jit)
 {
+ int stack_correction = 0;
+ struct jit_out_arg * args = jit->prepared_args.args;
+ int gp_pushed = ((jit->prepared_args.gp_args - jit->reg_al->gp_arg_reg_cnt) > (0) ? (jit->prepared_args.gp_args - jit->reg_al->gp_arg_reg_cnt) : (0));
+ int fp_pushed = ((jit->prepared_args.fp_args - jit->reg_al->fp_arg_reg_cnt) > (0) ? (jit->prepared_args.fp_args - jit->reg_al->fp_arg_reg_cnt) : (0));
+ if (jit_current_func_info(jit)->has_prolog) {
+  if ((jit->push_count + gp_pushed + fp_pushed) % 2) {
+   do { if ((((int)(((8))) >= -128 && (int)(((8))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((8))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+   stack_correction = 8;
+  }
+ } else {
+  if ((jit->push_count + gp_pushed + fp_pushed) % 2 == 0) {
+   do { if ((((int)(((8))) >= -128 && (int)(((8))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((8))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+   stack_correction = 8;
+  }
+ }
+ for (int x = jit->prepared_args.count - 1; x >= 0; x --) {
+  struct jit_out_arg * arg = &(args[x]);
+  if (!arg->isfp) {
+   if (arg->argpos < jit->reg_al->gp_arg_reg_cnt) jit_internal_emit_set_arg(jit, arg);
+   else jit_internal_emit_push_arg(jit, arg);
+  } else {
+   if (arg->argpos < jit->reg_al->fp_arg_reg_cnt) jit_internal_emit_set_fparg(jit, arg);
+   else jit_internal_emit_fppush_arg(jit, arg);
+  }
+ }
+ int fp_reg_arg_cnt = ((jit->prepared_args.fp_args) < (jit->reg_al->fp_arg_reg_cnt) ? (jit->prepared_args.fp_args) : (jit->reg_al->fp_arg_reg_cnt));
+ if (fp_reg_arg_cnt != 0) do { int _amd64_width_temp = ((size_t)(fp_reg_arg_cnt) == (size_t)(int)(size_t)(fp_reg_arg_cnt)); do { do { unsigned char _amd64_rex_bits = (((((_amd64_width_temp ? 4 : 8))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RAX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((_amd64_width_temp ? 4 : 8))) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0xb8 + (((AMD64_RAX)) & 0x7); if (((_amd64_width_temp ? 4 : 8)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)((fp_reg_arg_cnt))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; *(((jit->ip)))++ = imb.b [4]; *(((jit->ip)))++ = imb.b [5]; *(((jit->ip)))++ = imb.b [6]; *(((jit->ip)))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)((fp_reg_arg_cnt))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+ else do { do { unsigned char _amd64_rex_bits = (((4) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((4) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (((unsigned char)(X86_XOR)) << 3) + 3; do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RAX)))&0x07)<<3)|(((((AMD64_RAX)))&0x07))); } while (0); } while (0); } while (0);
+ return stack_correction;
+}
+static void jit_internal_emit_funcall(struct jit * jit, struct jit_op * op, int imm)
+{
+ int stack_correction = jit_internal_emit_arguments(jit);
+ if (!imm) {
+  jit_hw_reg * hreg = jit_internal_rmap_get(op->regmap, op->arg[0]);
+  if (hreg) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((hreg->id)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xff; do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|((((2))&0x07)<<3)|((((((hreg->id) & 0x7)))&0x07))); } while (0); } while (0); } while (0);
+  else do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xff; do { if (((AMD64_RBP)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((2)&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((jit_internal_GET_REG_POS(jit, op->arg[0])))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((AMD64_RBP))&0x7) == X86_ESP) { if ((((jit_internal_GET_REG_POS(jit, op->arg[0])))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((2)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((jit_internal_GET_REG_POS(jit, op->arg[0]))))) >= -128 && (int)((((jit_internal_GET_REG_POS(jit, op->arg[0]))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((2)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((jit_internal_GET_REG_POS(jit, op->arg[0]))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((2)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((jit_internal_GET_REG_POS(jit, op->arg[0]))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((jit_internal_GET_REG_POS(jit, op->arg[0])))) == 0 && (((AMD64_RBP))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((2)&0x7))&0x07)<<3)|((((((AMD64_RBP))&0x7))&0x07))); } while (0); break; } if ((((int)((((jit_internal_GET_REG_POS(jit, op->arg[0]))))) >= -128 && (int)((((jit_internal_GET_REG_POS(jit, op->arg[0]))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((2)&0x7))&0x07)<<3)|((((((AMD64_RBP))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((jit_internal_GET_REG_POS(jit, op->arg[0]))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((2)&0x7))&0x07)<<3)|((((((AMD64_RBP))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((jit_internal_GET_REG_POS(jit, op->arg[0]))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ } else {
+  if (jit_is_label(jit, (void *)op->arg[0])) {
+   op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
+   do { do { *((jit->ip))++ = (unsigned char)0xe8; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(((!jit_is_label(jit, (void *)(op->arg[0])) ? (op->arg[0]) : (((jit_value)jit->buf + ((jit_label *)(op->arg[0]))->pos - (jit_value)jit->ip))) - 4))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+  } else {
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_R11)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_R11) & 0x7); if ((8) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(op->arg[0])); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(op->arg[0])); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_R11)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xff; do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|((((2))&0x07)<<3)|((((((AMD64_R11) & 0x7)))&0x07))); } while (0); } while (0); } while (0);
+  }
+ }
+ stack_correction += jit->prepared_args.stack_size;
+ if (stack_correction)
+  do { if ((((int)(((stack_correction))) >= -128 && (int)(((stack_correction))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_correction))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_ADD))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_correction))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_correction))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ free(jit->prepared_args.args);
+ jit->push_count -= jit_internal_emit_pop_caller_saved_regs(jit, op);
+}
+static void jit_internal_emit_prolog_op(struct jit * jit, jit_op * op)
+{
+ jit->current_func = op;
+ struct jit_func_info * info = jit_current_func_info(jit);
+ int prolog = jit_current_func_info(jit)->has_prolog;
+ while ((jit_value)jit->ip % 16)
+  do { do { *(jit->ip)++ = (unsigned char)0x90; } while (0); } while (0);
+ op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
+ if (prolog) {
+  do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RBP) & 0x7); } while (0);
+  do { if ((8) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((8)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RBP)))&0x07)<<3)|(((((AMD64_RSP)))&0x07))); } while (0); } while (0); } while (0);
+ }
+ int stack_mem = info->allocai_mem + info->gp_reg_count * (sizeof(void *)) + info->fp_reg_count * sizeof(jit_float) + info->general_arg_cnt * (sizeof(void *)) + info->float_arg_cnt * sizeof(jit_float);
+ stack_mem = jit_value_align(stack_mem, (16));
+ if (prolog)
+  do { if ((((int)(((stack_mem))) >= -128 && (int)(((stack_mem))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_mem))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_mem))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_mem))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ jit->push_count = jit_internal_emit_push_callee_saved_regs(jit, op);
+}
+static void jit_internal_emit_msg_op(struct jit * jit, jit_op * op)
+{
+ jit_internal_emit_save_all_regs(jit, op);
+ if (!(op->code & 0x02)) do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RSI)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { switch (((8) == 8 ? 4 : (8))) { case 1: *((jit->ip))++ = (unsigned char)0x8a; break; case 2: *((jit->ip))++ = (unsigned char)0x66; case 4: *((jit->ip))++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|(((((((AMD64_RSI)&0x7))))&0x07)<<3)|(((((((op->r_arg[1])&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDI)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RDI) & 0x7); if ((8) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(op->r_arg[0])); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(op->r_arg[0])); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+ do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((AMD64_RAX))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RAX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_XOR))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((AMD64_RAX))))&0x07)<<3)|((((((AMD64_RAX))))&0x07))); } while (0); } while (0); } while (0);
+ do { int _amd64_width_temp = ((size_t)(printf) == (size_t)(int)(size_t)(printf)); do { do { unsigned char _amd64_rex_bits = (((((_amd64_width_temp ? 4 : 8))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RDX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((_amd64_width_temp ? 4 : 8))) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0xb8 + (((AMD64_RDX)) & 0x7); if (((_amd64_width_temp ? 4 : 8)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)((printf))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; *(((jit->ip)))++ = imb.b [4]; *(((jit->ip)))++ = imb.b [5]; *(((jit->ip)))++ = imb.b [6]; *(((jit->ip)))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)((printf))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+ do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xff; do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|((((2))&0x07)<<3)|((((((AMD64_RDX) & 0x7)))&0x07))); } while (0); } while (0); } while (0);
+ jit_internal_emit_restore_all_regs(jit, op);
+}
+static void jit_internal_emit_trace_op(struct jit *jit, jit_op *op)
+{
+ jit_internal_emit_save_all_regs(jit, op);
+ do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RBX) & 0x7); } while (0);
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RBX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { switch (((8) == 8 ? 4 : (8))) { case 1: *((jit->ip))++ = (unsigned char)0x8a; break; case 2: *((jit->ip))++ = (unsigned char)0x66; case 4: *((jit->ip))++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|(((((((AMD64_RBX)&0x7))))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+ do { if ((((int)((~0xf)) >= -128 && (int)((~0xf)) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x83; do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((X86_AND)))&0x07)<<3)|(((((AMD64_RSP)))&0x07))); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((~0xf)) & 0xff); ++((jit->ip)); } while (0); } else if ((AMD64_RSP) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (((unsigned char)(X86_AND)) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((~0xf)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x81; do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((X86_AND)))&0x07)<<3)|(((((AMD64_RSP)))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((~0xf)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } } while (0);
+ do { if ((((int)((16)) >= -128 && (int)((16)) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x83; do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((X86_SUB)))&0x07)<<3)|(((((AMD64_RSP)))&0x07))); } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((16)) & 0xff); ++((jit->ip)); } while (0); } else if ((AMD64_RSP) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (((unsigned char)(X86_SUB)) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((16)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x81; do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((X86_SUB)))&0x07)<<3)|(((((AMD64_RSP)))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((16)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } } while (0);
+ int trace = 0;
+ jit_opcode prev_code = ((jit_opcode) (op->prev->code & 0xfff8));
+ jit_opcode next_code = ((jit_opcode) (op->next->code & 0xfff8));
+ if ((prev_code == JIT_PROLOG) || (prev_code == JIT_LABEL) || (prev_code == JIT_PATCH)) trace |= (1);
+ if ((next_code != JIT_PROLOG) && (next_code != JIT_LABEL) && (next_code != JIT_PATCH)) trace |= (2);
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDI)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RDI) & 0x7); if ((8) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(jit)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(jit)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSI)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RSI) & 0x7); if ((8) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(op)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(op)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+ do { do { unsigned char _amd64_rex_bits = ((((4)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((4)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RDX) & 0x7); if ((4) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(op->r_arg[0])); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(op->r_arg[0])); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+ do { do { unsigned char _amd64_rex_bits = ((((4)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RCX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((4)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RCX) & 0x7); if ((4) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(trace)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(trace)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+ do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (((unsigned char)(X86_XOR)) << 3) + 3; do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RAX)))&0x07)<<3)|(((((AMD64_RAX)))&0x07))); } while (0); } while (0); } while (0);
+ do { int _amd64_width_temp = ((size_t)(jit_trace_callback) == (size_t)(int)(size_t)(jit_trace_callback)); do { do { unsigned char _amd64_rex_bits = (((((_amd64_width_temp ? 4 : 8))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_R8))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((_amd64_width_temp ? 4 : 8))) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0xb8 + (((AMD64_R8)) & 0x7); if (((_amd64_width_temp ? 4 : 8)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)((jit_trace_callback))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; *(((jit->ip)))++ = imb.b [4]; *(((jit->ip)))++ = imb.b [5]; *(((jit->ip)))++ = imb.b [6]; *(((jit->ip)))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)((jit_trace_callback))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+ do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_R8)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xff; do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|((((2))&0x07)<<3)|((((((AMD64_R8) & 0x7)))&0x07))); } while (0); } while (0); } while (0);
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { switch (((8) == 8 ? 4 : (8))) { case 1: *((jit->ip))++ = (unsigned char)0x8a; break; case 2: *((jit->ip))++ = (unsigned char)0x66; case 4: *((jit->ip))++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|(((((((AMD64_RSP)&0x7))))&0x07)<<3)|(((((((AMD64_RBX)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+ do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RBX) & 0x7); } while (0);
+ jit_internal_emit_restore_all_regs(jit, op);
+}
+static void jit_internal_emit_fret_op(struct jit * jit, jit_op * op)
+{
+ jit_value arg = op->r_arg[0];
+ if (op->arg_size == sizeof(float))
+  do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((arg)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((arg)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x5a)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((arg)))))&0x07)<<3)|(((((((arg)))))&0x07))); } while (0); } while (0); } while (0);
+ do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((arg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP)) == AMD64_RIP ? 0 : ((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x13); do { if ((((AMD64_RSP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((arg)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-8)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RSP)))&0x7) == X86_ESP) { if (((((-8)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((arg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((-8))))) >= -128 && (int)(((((-8))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((arg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((-8))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((arg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((-8))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((-8)))) == 0 && ((((AMD64_RSP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((arg)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((-8))))) >= -128 && (int)(((((-8))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((arg)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((-8))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((arg)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((-8))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ do { if ((8) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((8)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((AMD64_RSP)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((AMD64_RAX))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((AMD64_RSP))&0x7) == X86_ESP) { if ((((-8))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((AMD64_RAX))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((-8)))) >= -128 && (int)((((-8)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((AMD64_RAX))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-8)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((AMD64_RAX))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-8)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((-8))) == 0 && (((AMD64_RSP))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((AMD64_RAX))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); break; } if ((((int)((((-8)))) >= -128 && (int)((((-8)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((AMD64_RAX))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-8)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((AMD64_RAX))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-8)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ do { *(jit->ip)++ = (unsigned char)0xf2; do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((AMD64_XMM0)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0x10; do { if (((AMD64_RSP) & 0x7) == X86_ESP) { if (((-8)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((AMD64_XMM0) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((-8))) >= -128 && (int)(((-8))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((AMD64_XMM0) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-8))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((AMD64_XMM0) & 0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((-8)) == 0 && ((AMD64_RSP) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((AMD64_XMM0) & 0x7))&0x07)<<3)|(((((AMD64_RSP) & 0x7))&0x07))); } while (0); break; } if ((((int)(((-8))) >= -128 && (int)(((-8))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((AMD64_XMM0) & 0x7))&0x07)<<3)|(((((AMD64_RSP) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-8))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((AMD64_XMM0) & 0x7))&0x07)<<3)|(((((AMD64_RSP) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+ jit->push_count -= jit_internal_emit_pop_callee_saved_regs(jit);
+ if (jit_current_func_info(jit)->has_prolog) {
+  do { if ((8) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((8)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RSP)))&0x07)<<3)|(((((AMD64_RBP)))&0x07))); } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RBP) & 0x7); } while (0);
+ }
+ do { *(jit->ip)++ = (unsigned char)0xc3; } while (0);
+}
+static void jit_internal_emit_fretval_op(struct jit * jit, jit_op * op)
+{
+ if (op->arg_size == sizeof(float)) do { *(((jit->ip)))++ = (unsigned char)((0xf3)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((AMD64_XMM0)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((AMD64_XMM0)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x5a)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((AMD64_XMM0)))))&0x07)<<3)|(((((((AMD64_XMM0)))))&0x07))); } while (0); } while (0); } while (0);
+}
+void jit_patch_external_calls(struct jit * jit)
+{
+}
+struct jit_reg_allocator * jit_reg_allocator_create()
+{
+ struct jit_reg_allocator * a = malloc(sizeof(struct jit_reg_allocator));
+ a->gp_reg_cnt = 13;
+ a->gp_regs = malloc(sizeof(jit_hw_reg) * a->gp_reg_cnt);
+ a->gp_regs[0] = (jit_hw_reg) { AMD64_RAX, "rax", 0, 0, 7 };
+ a->gp_regs[1] = (jit_hw_reg) { AMD64_RBX, "rbx", 1, 0, 8 };
+ a->gp_regs[2] = (jit_hw_reg) { AMD64_RCX, "rcx", 0, 0, 4 };
+ a->gp_regs[3] = (jit_hw_reg) { AMD64_RDX, "rdx", 0, 0, 3 };
+ a->gp_regs[4] = (jit_hw_reg) { AMD64_RSI, "rsi", 0, 0, 2 };
+ a->gp_regs[5] = (jit_hw_reg) { AMD64_RDI, "rdi", 0, 0, 1 };
+ a->gp_regs[6] = (jit_hw_reg) { AMD64_R8, "r8", 0, 0, 5 };
+ a->gp_regs[7] = (jit_hw_reg) { AMD64_R9, "r9", 0, 0, 6 };
+ a->gp_regs[8] = (jit_hw_reg) { AMD64_R10, "r10", 0, 0, 9 };
+ a->gp_regs[9] = (jit_hw_reg) { AMD64_R11, "r11", 0, 0, 10 };
+ a->gp_regs[10] = (jit_hw_reg) { AMD64_R12, "r12", 1, 0, 11 };
+ a->gp_regs[11] = (jit_hw_reg) { AMD64_R14, "r14", 1, 0, 13 };
+ a->gp_regs[12] = (jit_hw_reg) { AMD64_R15, "r15", 1, 0, 14 };
+ a->gp_arg_reg_cnt = 6;
+ a->fp_reg = AMD64_RBP;
+ a->ret_reg = &(a->gp_regs[0]);
+ a->fp_reg_cnt = 10;
+ int reg = 0;
+ a->fp_regs = malloc(sizeof(jit_hw_reg) * a->fp_reg_cnt);
+ a->fp_regs[reg++] = (jit_hw_reg) { AMD64_XMM0, "xmm0", 0, 1, 99 };
+ a->fp_regs[reg++] = (jit_hw_reg) { AMD64_XMM1, "xmm1", 0, 1, 98 };
+ a->fp_regs[reg++] = (jit_hw_reg) { AMD64_XMM2, "xmm2", 0, 1, 97 };
+ a->fp_regs[reg++] = (jit_hw_reg) { AMD64_XMM3, "xmm3", 0, 1, 96 };
+ a->fp_regs[reg++] = (jit_hw_reg) { AMD64_XMM4, "xmm4", 0, 1, 95 };
+ a->fp_regs[reg++] = (jit_hw_reg) { AMD64_XMM5, "xmm5", 0, 1, 94 };
+ a->fp_regs[reg++] = (jit_hw_reg) { AMD64_XMM6, "xmm6", 0, 1, 93 };
+ a->fp_regs[reg++] = (jit_hw_reg) { AMD64_XMM7, "xmm7", 0, 1, 92 };
+ a->fp_regs[reg++] = (jit_hw_reg) { AMD64_XMM13, "xmm13", 0, 1, 1 };
+ a->fp_regs[reg++] = (jit_hw_reg) { AMD64_XMM12, "xmm12", 0, 1, 2 };
+ a->fpret_reg = &(a->fp_regs[0]);
+ a->gp_arg_reg_cnt = 6;
+ a->gp_arg_regs = malloc(sizeof(jit_hw_reg *) * 6);
+ a->gp_arg_regs[0] = &(a->gp_regs[5]);
+ a->gp_arg_regs[1] = &(a->gp_regs[4]);
+ a->gp_arg_regs[2] = &(a->gp_regs[3]);
+ a->gp_arg_regs[3] = &(a->gp_regs[2]);
+ a->gp_arg_regs[4] = &(a->gp_regs[6]);
+ a->gp_arg_regs[5] = &(a->gp_regs[7]);
+ a->fp_arg_reg_cnt = 8;
+ a->fp_arg_regs = malloc(sizeof(jit_hw_reg *) * 8);
+ for (int i = 0; i < 8; i++)
+  a->fp_arg_regs[i] = &(a->fp_regs[i]);
+ return a;
+}
+static int jit_internal_emit_push_reg(struct jit * jit, jit_hw_reg * r, int stack_offset)
+{
+ if (!r->fp) {
+  stack_offset += (sizeof(void *));
+  do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((r->id)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x88; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x89; break; default: assert (0); } do { if ((((AMD64_RSP)&0x7)) == X86_ESP) { if (((-stack_offset)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((r->id)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((-stack_offset))) >= -128 && (int)(((-stack_offset))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((r->id)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-stack_offset))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((r->id)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-stack_offset))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((-stack_offset)) == 0 && (((AMD64_RSP)&0x7)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((r->id)&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); break; } if ((((int)(((-stack_offset))) >= -128 && (int)(((-stack_offset))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((r->id)&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-stack_offset))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((r->id)&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-stack_offset))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+ } else {
+  stack_offset += 8;
+  do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((r->id))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP)) == AMD64_RIP ? 0 : ((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x13); do { if ((((AMD64_RSP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((r->id)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-stack_offset)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RSP)))&0x7) == X86_ESP) { if (((((-stack_offset)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((-stack_offset))))) >= -128 && (int)(((((-stack_offset))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((-stack_offset))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((-stack_offset))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((-stack_offset)))) == 0 && ((((AMD64_RSP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((-stack_offset))))) >= -128 && (int)(((((-stack_offset))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((-stack_offset))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((-stack_offset))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ }
+ return stack_offset;
+}
+static int jit_internal_emit_pop_reg(struct jit * jit, jit_hw_reg * r, int stack_offset)
+{
+ if (!r->fp) {
+  do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((r->id)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((AMD64_RSP)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((r->id))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_offset))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((AMD64_RSP))&0x7) == X86_ESP) { if ((((stack_offset))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((r->id))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((stack_offset)))) >= -128 && (int)((((stack_offset)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((r->id))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((stack_offset)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((r->id))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_offset)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((stack_offset))) == 0 && (((AMD64_RSP))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((r->id))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); break; } if ((((int)((((stack_offset)))) >= -128 && (int)((((stack_offset)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((r->id))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((stack_offset)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((r->id))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_offset)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  stack_offset += (sizeof(void *));
+ } else {
+  do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((r->id))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x12); do { if ((((AMD64_RSP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((r->id)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_offset)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RSP)))&0x7) == X86_ESP) { if (((((stack_offset)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((stack_offset))))) >= -128 && (int)(((((stack_offset))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((stack_offset))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((stack_offset))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((stack_offset)))) == 0 && ((((AMD64_RSP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((stack_offset))))) >= -128 && (int)(((((stack_offset))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((stack_offset))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((r->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((stack_offset))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  stack_offset += 8;
+ }
+ return stack_offset;
+}
+static int jit_internal_emit_push_callee_saved_regs(struct jit * jit, jit_op * op)
+{
+ int stack_offset = 0;
+ for (int i = 0; i < jit->reg_al->gp_reg_cnt; i++) {
+  jit_hw_reg * r = &(jit->reg_al->gp_regs[i]);
+  if (r->callee_saved)
+   for (struct jit_op * o = op->next; o != NULL; o = o->next) {
+    if (((jit_opcode) (o->code & 0xfff8)) == JIT_PROLOG) break;
+    if (jit_internal_uses_hw_reg(o, r->id, 0)) {
+     stack_offset = jit_internal_emit_push_reg(jit, r, stack_offset);
+     break;
+    }
+   }
+ }
+ stack_offset = jit_value_align(stack_offset, (16));
+ if (stack_offset) do { if ((((int)(((stack_offset))) >= -128 && (int)(((stack_offset))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_offset))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_offset))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_offset))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ return stack_offset / (sizeof(void *));
+}
+static int jit_internal_emit_pop_callee_saved_regs(struct jit * jit)
+{
+ int count = 0;
+ struct jit_op * op = jit->current_func;
+ jit_hw_reg *active_regs[32];
+ for (int i = jit->reg_al->gp_reg_cnt - 1; i >= 0; i--) {
+  jit_hw_reg * r = &(jit->reg_al->gp_regs[i]);
+  if (r->callee_saved)
+   for (struct jit_op * o = op->next; o != NULL; o = o->next) {
+    if (((jit_opcode) (o->code & 0xfff8)) == JIT_PROLOG) break;
+    if (jit_internal_uses_hw_reg(o, r->id, 0)) {
+     active_regs[count] = r;
+     count++;
+     break;
+    }
+   }
+ }
+ int stack_space = jit_value_align(count * (sizeof(void *)), (16));
+ int stack_offset = stack_space - (count * (sizeof(void *)));
+ for (int i = 0; i < count; i++) {
+  stack_offset = jit_internal_emit_pop_reg(jit, active_regs[i], stack_offset);
+ }
+ if (stack_space) do { if ((((int)(((stack_space))) >= -128 && (int)(((stack_space))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_space))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_ADD))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_space))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_space))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ return count;
+}
+static int jit_internal_generic_push_caller_saved_regs(struct jit * jit, jit_op * op, int reg_count,
+  jit_hw_reg * regs, int fp, jit_hw_reg * skip_reg, int stack_offset)
+{
+ jit_value reg;
+ int skip_reg_id = (skip_reg ? skip_reg->id :-1);
+ for (int i = 0; i < reg_count; i++) {
+  if ((regs[i].id == skip_reg_id) || (regs[i].callee_saved)) continue;
+  jit_hw_reg * hreg = jit_internal_rmap_is_associated(op->regmap, regs[i].id, fp, &reg);
+  if (hreg && jit_set_get(op->live_in, reg)) {
+   stack_offset = jit_internal_emit_push_reg(jit, hreg, stack_offset);
+  }
+ }
+ return stack_offset;
+}
+static int jit_internal_emit_push_caller_saved_regs(struct jit * jit, jit_op * op)
+{
+ int stack_offset = 0;
+ struct jit_reg_allocator * al = jit->reg_al;
+ while (op) {
+  if (((jit_opcode) (op->code & 0xfff8)) == JIT_CALL) break;
+  op = op->next;
+ }
+ stack_offset = jit_internal_generic_push_caller_saved_regs(jit, op, al->gp_reg_cnt, al->gp_regs, 0, al->ret_reg, stack_offset);
+ stack_offset = jit_internal_generic_push_caller_saved_regs(jit, op, al->fp_reg_cnt, al->fp_regs, 1, al->fpret_reg, stack_offset);
+ if (stack_offset) do { if ((((int)(((stack_offset))) >= -128 && (int)(((stack_offset))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_offset))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_offset))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_offset))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ int count = stack_offset / (sizeof(void *));
+ return count;
+}
+static int jit_internal_generic_pop_caller_saved_regs(struct jit * jit, jit_op * op, int reg_count,
+  jit_hw_reg * regs, int fp, jit_hw_reg * skip_reg, int stack_offset)
+{
+ jit_value reg;
+ int skip_reg_id = (skip_reg ? skip_reg->id :-1);
+ for (int i = reg_count - 1; i >= 0; i--) {
+  if ((regs[i].id == skip_reg_id) || (regs[i].callee_saved)) continue;
+  jit_hw_reg * hreg = jit_internal_rmap_is_associated(op->regmap, regs[i].id, fp, &reg);
+  if (hreg && jit_set_get(op->live_in, reg)) {
+   stack_offset = jit_internal_emit_pop_reg(jit, hreg, stack_offset);
+  }
+ }
+ return stack_offset;
+}
+static int jit_internal_emit_pop_caller_saved_regs(struct jit * jit, jit_op * op)
+{
+ struct jit_reg_allocator * al = jit->reg_al;
+ int stack_offset = 0;
+ stack_offset = jit_internal_generic_pop_caller_saved_regs(jit, op, al->fp_reg_cnt, al->fp_regs, 1, al->fpret_reg, stack_offset);
+ stack_offset = jit_internal_generic_pop_caller_saved_regs(jit, op, al->gp_reg_cnt, al->gp_regs, 0, al->ret_reg, stack_offset);
+ if (stack_offset) do { if ((((int)(((stack_offset))) >= -128 && (int)(((stack_offset))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_offset))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_ADD))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_offset))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_offset))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ int count = stack_offset / (sizeof(void *));
+ return count;
+}
+static int jit_internal_is_active_register(struct jit_reg_allocator *al, jit_hw_reg *reg, jit_op *op)
+{
+ if (op->next == NULL) return 0;
+ if ((((jit_opcode) (op->next->code & 0xfff8)) == JIT_PUTARG) || (((jit_opcode) (op->next->code & 0xfff8)) == JIT_FPUTARG) || (((jit_opcode) (op->next->code & 0xfff8)) == JIT_CALL)) return 1;
+ if ((((jit_opcode) (op->next->code & 0xfff8)) == JIT_RETVAL) && (reg == al->ret_reg)) return 1;
+ if (op->next->regmap == NULL) return 1;
+ if (op->prev->regmap == NULL) return 1;
+ jit_value vreg;
+ jit_hw_reg *hw = jit_internal_rmap_is_associated(op->regmap, reg->id, reg->fp, &vreg);
+ if (hw) {
+  if (op->prev && ((op->prev->live_in && jit_set_get(op->prev->live_in, vreg)) || ((op->prev->live_out && jit_set_get(op->prev->live_out, vreg))))) return 1;
+  if (op->next && ((op->next->live_in && jit_set_get(op->next->live_in, vreg)) || ((op->next->live_out && jit_set_get(op->next->live_out, vreg))))) return 1;
+  return 0;
+ }
+ return 0;
+}
+static int jit_internal_required_stack_space_for_regs(struct jit *jit, jit_op *op)
+{
+ struct jit_reg_allocator * al = jit->reg_al;
+ int space = (sizeof(void *));
+ if (!jit_current_func_info(jit)->has_prolog) space += (sizeof(void *));
+ for (int i = 0; i < al->gp_reg_cnt; i++) {
+  jit_hw_reg *reg = &al->gp_regs[i];
+  if (!reg->callee_saved && jit_internal_is_active_register(al, reg, op))
+   space += (sizeof(void *));
+ }
+ for (int i = 0; i < al->fp_reg_cnt; i++) {
+  jit_hw_reg *reg = &al->fp_regs[i];
+  if (!reg->callee_saved && jit_internal_is_active_register(al, reg, op))
+   space += sizeof(double) * 2;
+ }
+ return space;
+}
+static void jit_internal_emit_save_all_regs(struct jit *jit, jit_op *op)
+{
+ struct jit_reg_allocator * al = jit->reg_al;
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *(jit->ip)++ = (unsigned char)0x9c; } while (0); } while (0);
+ for (int i = 0; i < al->gp_reg_cnt; i++) {
+  jit_hw_reg *reg = &al->gp_regs[i];
+  if (!reg->callee_saved && jit_internal_is_active_register(al, reg, op))
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((reg->id)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((reg->id) & 0x7); } while (0);
+ }
+ for (int i = 0; i < al->fp_reg_cnt; i++) {
+  jit_hw_reg *reg = &al->fp_regs[i];
+  if (!reg->callee_saved && jit_internal_is_active_register(al, reg, op))
+   { do { if ((((int)(((8))) >= -128 && (int)(((8))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((8))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((reg->id))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP)) == AMD64_RIP ? 0 : ((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x13); do { if ((((AMD64_RSP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((reg->id)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RSP)))&0x7) == X86_ESP) { if (((((0)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((0)))) == 0 && ((((AMD64_RSP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); } while(0);
+ }
+ int alignment = jit_internal_required_stack_space_for_regs(jit, op) % 16;
+ if (alignment != 0) do { if ((((int)(((16 - alignment))) >= -128 && (int)(((16 - alignment))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((16 - alignment))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((16 - alignment))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((16 - alignment))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+}
+static void jit_internal_emit_restore_all_regs(struct jit *jit, jit_op *op)
+{
+ int alignment = jit_internal_required_stack_space_for_regs(jit, op) % 16;
+ if (alignment != 0) do { if ((((int)(((16 - alignment))) >= -128 && (int)(((16 - alignment))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((16 - alignment))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_ADD))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((16 - alignment))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((16 - alignment))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ struct jit_reg_allocator * al = jit->reg_al;
+ for (int i = al->fp_reg_cnt - 1; i >= 0; i--) {
+  jit_hw_reg *reg = &al->fp_regs[i];
+  if (!reg->callee_saved && jit_internal_is_active_register(al, reg, op))
+   { do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((reg->id))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x12); do { if ((((AMD64_RSP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((reg->id)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RSP)))&0x7) == X86_ESP) { if (((((0)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((0)))) == 0 && ((((AMD64_RSP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((0))))) >= -128 && (int)(((((0))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((0))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((reg->id)))&0x7))&0x07)<<3)|(((((((AMD64_RSP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((0))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); do { if ((((int)(((8))) >= -128 && (int)(((8))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((8))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_ADD))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((8))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);} while(0);
+ }
+ for (int i = al->gp_reg_cnt - 1; i >= 0; i--) {
+  jit_hw_reg *reg = &al->gp_regs[i];
+  if (!reg->callee_saved && jit_internal_is_active_register(al, reg, op))
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((reg->id)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((reg->id) & 0x7); } while (0);
+ }
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *(jit->ip)++ = (unsigned char)0x9d; } while (0); } while (0);
+}
+static void jit_internal_emit_lreg(struct jit * jit, int hreg_id, jit_value vreg)
+{
+ int stack_pos = jit_internal_GET_REG_POS(jit, vreg) ;
+ if (((vreg) & 0x01) == (1)) do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((hreg_id))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RBP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x12); do { if ((((AMD64_RBP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((hreg_id)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RBP)))&0x7) == X86_ESP) { if (((((stack_pos)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((stack_pos))))) >= -128 && (int)(((((stack_pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((stack_pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((stack_pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((stack_pos)))) == 0 && ((((AMD64_RBP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((stack_pos))))) >= -128 && (int)(((((stack_pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((stack_pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((stack_pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ else do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((hreg_id)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((AMD64_RBP)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((hreg_id))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((AMD64_RBP))&0x7) == X86_ESP) { if ((((stack_pos))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((hreg_id))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((stack_pos)))) >= -128 && (int)((((stack_pos)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((hreg_id))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((stack_pos)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((hreg_id))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((stack_pos))) == 0 && (((AMD64_RBP))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((hreg_id))&0x7))&0x07)<<3)|((((((AMD64_RBP))&0x7))&0x07))); } while (0); break; } if ((((int)((((stack_pos)))) >= -128 && (int)((((stack_pos)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((hreg_id))&0x7))&0x07)<<3)|((((((AMD64_RBP))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((stack_pos)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((hreg_id))&0x7))&0x07)<<3)|((((((AMD64_RBP))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+}
+static void jit_internal_emit_ureg(struct jit * jit, jit_value vreg, int hreg_id)
+{
+ int stack_pos = jit_internal_GET_REG_POS(jit, vreg);
+ if (((vreg) & 0x01) == (1)) do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((hreg_id))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RBP)) == AMD64_RIP ? 0 : ((AMD64_RBP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x13); do { if ((((AMD64_RBP))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((hreg_id)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((AMD64_RBP)))&0x7) == X86_ESP) { if (((((stack_pos)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((stack_pos))))) >= -128 && (int)(((((stack_pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((stack_pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((stack_pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((stack_pos)))) == 0 && ((((AMD64_RBP)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((stack_pos))))) >= -128 && (int)(((((stack_pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((stack_pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((hreg_id)))&0x7))&0x07)<<3)|(((((((AMD64_RBP)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((stack_pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ else do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((hreg_id)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x88; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x89; break; default: assert (0); } do { if ((((AMD64_RBP)&0x7)) == X86_ESP) { if (((stack_pos)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((hreg_id)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((stack_pos))) >= -128 && (int)(((stack_pos))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((hreg_id)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_pos))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((hreg_id)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((stack_pos)) == 0 && (((AMD64_RBP)&0x7)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((hreg_id)&0x7)))&0x07)<<3)|((((((AMD64_RBP)&0x7)))&0x07))); } while (0); break; } if ((((int)(((stack_pos))) >= -128 && (int)(((stack_pos))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((hreg_id)&0x7)))&0x07)<<3)|((((((AMD64_RBP)&0x7)))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_pos))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((hreg_id)&0x7)))&0x07)<<3)|((((((AMD64_RBP)&0x7)))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+}
+static void jit_internal_emit_get_arg_from_stack(struct jit * jit, int type, int size, int dreg, int stack_reg, int stack_pos)
+{
+ if (type != JIT_FLOAT_NUM) {
+  if (size == (sizeof(void *))) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((stack_reg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((stack_reg)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((dreg))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((stack_reg))&0x7) == X86_ESP) { if ((((stack_pos))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((stack_pos)))) >= -128 && (int)((((stack_pos)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((stack_pos)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((stack_pos))) == 0 && (((stack_reg))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|((((((stack_reg))&0x7))&0x07))); } while (0); break; } if ((((int)((((stack_pos)))) >= -128 && (int)((((stack_pos)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|((((((stack_reg))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((stack_pos)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|((((((stack_reg))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  else if (type == JIT_SIGNED_NUM)
+   do { if ((size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((stack_reg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x63; do { if ((((stack_reg)&0x7)) == X86_ESP) { if (((stack_pos)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((dreg)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((stack_pos))) >= -128 && (int)(((stack_pos))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((dreg)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_pos))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((dreg)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((stack_pos)) == 0 && (((stack_reg)&0x7)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((dreg)&0x7)))&0x07)<<3)|((((((stack_reg)&0x7)))&0x07))); } while (0); break; } if ((((int)(((stack_pos))) >= -128 && (int)(((stack_pos))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((dreg)&0x7)))&0x07)<<3)|((((((stack_reg)&0x7)))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_pos))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((dreg)&0x7)))&0x07)<<3)|((((((stack_reg)&0x7)))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break; } do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((stack_reg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; switch (size) { case 1: *(jit->ip)++ = (unsigned char)0xbe; break; case 2: *(jit->ip)++ = (unsigned char)0xbf; break; default: assert(0); } do { if (((stack_reg)&0x7) == X86_ESP) { if (((stack_pos)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((stack_pos))) >= -128 && (int)(((stack_pos))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_pos))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((stack_pos)) == 0 && ((stack_reg)&0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((((stack_reg)&0x7))&0x07))); } while (0); break; } if ((((int)(((stack_pos))) >= -128 && (int)(((stack_pos))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((((stack_reg)&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_pos))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((((stack_reg)&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+  else do { if ((size) == 8) { do { if ((size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((size)) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((stack_reg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((size)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((stack_reg)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((dreg))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((stack_reg))&0x7) == X86_ESP) { if ((((stack_pos))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((stack_pos)))) >= -128 && (int)((((stack_pos)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((stack_pos)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((stack_pos))) == 0 && (((stack_reg))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|((((((stack_reg))&0x7))&0x07))); } while (0); break; } if ((((int)((((stack_pos)))) >= -128 && (int)((((stack_pos)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|((((((stack_reg))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((stack_pos)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|((((((stack_reg))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break; } if ((size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((dreg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((dreg))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_XOR))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((dreg))))&0x07)<<3)|((((((dreg))))&0x07))); } while (0); } while (0); } while (0); do { if ((size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((size)) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((stack_reg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((size)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((stack_reg)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((dreg))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((stack_reg))&0x7) == X86_ESP) { if ((((stack_pos))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((stack_pos)))) >= -128 && (int)((((stack_pos)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((stack_pos)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((stack_pos))) == 0 && (((stack_reg))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|((((((stack_reg))&0x7))&0x07))); } while (0); break; } if ((((int)((((stack_pos)))) >= -128 && (int)((((stack_pos)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|((((((stack_reg))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((stack_pos)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((dreg))&0x7))&0x07)<<3)|((((((stack_reg))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break; } do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((stack_reg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; switch (size) { case 1: *(jit->ip)++ = (unsigned char)0xb6; break; case 2: *(jit->ip)++ = (unsigned char)0xb7; break; default: assert(0); } do { if (((stack_reg)&0x7) == X86_ESP) { if (((stack_pos)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((stack_pos))) >= -128 && (int)(((stack_pos))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_pos))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((stack_pos)) == 0 && ((stack_reg)&0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((((stack_reg)&0x7))&0x07))); } while (0); break; } if ((((int)(((stack_pos))) >= -128 && (int)(((stack_pos))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((((stack_reg)&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((stack_pos))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((((stack_reg)&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((stack_pos))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+ } else {
+  if (size == sizeof(float)) do { *((jit->ip))++ = (unsigned char)(0xf3); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((dreg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((stack_reg)) == AMD64_RIP ? 0 : ((stack_reg))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x5a); do { if ((((stack_reg))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((dreg)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((stack_reg)))&0x7) == X86_ESP) { if (((((stack_pos)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((stack_pos))))) >= -128 && (int)(((((stack_pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((stack_pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((stack_pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((stack_pos)))) == 0 && ((((stack_reg)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((((((stack_reg)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((stack_pos))))) >= -128 && (int)(((((stack_pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((((((stack_reg)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((stack_pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((((((stack_reg)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((stack_pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  else do { *((jit->ip))++ = (unsigned char)(0x66); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((((dreg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((stack_reg))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(((jit->ip)))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)(0x0f); *((jit->ip))++ = (unsigned char)(0x12); do { if ((((stack_reg))) == AMD64_RIP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((dreg)))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((stack_pos)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else do { if (((((stack_reg)))&0x7) == X86_ESP) { if (((((stack_pos)))) == 0) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((((stack_pos))))) >= -128 && (int)(((((stack_pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((stack_pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((stack_pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } break; } if (((((stack_pos)))) == 0 && ((((stack_reg)))&0x7) != X86_EBP) { do { *(((((jit->ip)))))++ = ((((0)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((((((stack_reg)))&0x7))&0x07))); } while (0); break; } if ((((int)(((((stack_pos))))) >= -128 && (int)(((((stack_pos))))) <= 127))) { do { *(((((jit->ip)))))++ = ((((1)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((((((stack_reg)))&0x7))&0x07))); } while (0); do { *(((((jit->ip))))) = (unsigned char)((((((stack_pos))))) & 0xff); ++(((((jit->ip))))); } while (0); } else { do { *(((((jit->ip)))))++ = ((((2)&0x03)<<6)|(((((((dreg)))&0x7))&0x07)<<3)|(((((((stack_reg)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((((stack_pos))))); *(((((jit->ip)))))++ = imb.b [0]; *(((((jit->ip)))))++ = imb.b [1]; *(((((jit->ip)))))++ = imb.b [2]; *(((((jit->ip)))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ }
+}
+static void jit_internal_emit_get_arg(struct jit * jit, jit_op * op)
+{
+ struct jit_func_info * info = jit_current_func_info(jit);
+ int dreg = op->r_arg[0];
+ int arg_id = op->r_arg[1];
+ struct jit_inp_arg * arg = &(info->args[arg_id]);
+ int size = arg->size;
+ int type = arg->type;
+ int reg_id = (((type == JIT_FLOAT_NUM ? (1) : (0)) & 0x01) | ((((3)) & 0x03) << 1) | ((arg_id) & 0xfffffff) << 4);
  int read_from_stack = 0;
  int stack_pos;
  if (!arg->passed_by_reg) {
   read_from_stack = 1;
   stack_pos = arg->location.stack_pos;
+  if (!jit_current_func_info(jit)->has_prolog) {
+   stack_pos -= (sizeof(void *));
+   stack_pos += jit->push_count * (sizeof(void *));
+   jit_internal_emit_get_arg_from_stack(jit, type, size, dreg, AMD64_RSP, stack_pos);
+   return;
+  }
  }
- if (arg->passed_by_reg && !associated) {
+ if (arg->passed_by_reg && jit_internal_rmap_get(op->regmap, reg_id) == NULL) {
   read_from_stack = 1;
   stack_pos = arg->spill_pos;
  }
- if (read_from_stack) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((stack_pos)); __f->i = 1; __f->rd = ((dest_reg)); __f->rs1 = ((sparc_fp)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((dest_reg))); __f->rs1 = ((sparc_g0)); __f->rs2 = (((arg->location.reg))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-}
-static void jit_internal_emit_get_arg_float(struct jit * jit, struct jit_inp_arg * arg, int dest_reg, int associated)
-{
- if (associated) {
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((arg->location.reg)); __f->rs1 = ((sparc_fp)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((sparc_f30)); __f->rs1 = ((sparc_fp)); __f->op3 = (32); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fstod_val)); __f->rd = ((dest_reg)); __f->rs1 = ((0)); __f->rs2 = ((sparc_f30)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
+ if (read_from_stack) {
+  jit_internal_emit_get_arg_from_stack(jit, type, size, dreg, AMD64_RBP, stack_pos);
+  return;
+ }
+ jit_hw_reg *arg_reg = jit_internal_rmap_get(op->regmap, reg_id);
+ if (type != JIT_FLOAT_NUM) {
+  if (size == (sizeof(void *))) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((arg_reg->id)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dreg)))&0x07)<<3)|(((((arg_reg->id)))&0x07))); } while (0); } while (0); } while (0);
+  else if (type == JIT_SIGNED_NUM) do { if ((size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((arg_reg->id)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x63; do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dreg)&0x7))&0x07)<<3)|(((((arg_reg->id)&0x7))&0x07))); } while (0); } while (0); } while (0); break; } if ((size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((arg_reg->id)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((size)) { case 1: *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0xbe; break; case 2: *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0xbf; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dreg)))&0x07)<<3)|(((((arg_reg->id)))&0x07))); } while (0); } while (0); } while (0);
+  else do { if ((size) == 8) { do { if ((8) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((arg_reg->id)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((8)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dreg)))&0x07)<<3)|(((((arg_reg->id)))&0x07))); } while (0); } while (0); } while (0); break; } if ((size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((dreg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((dreg))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_XOR))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((dreg))))&0x07)<<3)|((((((dreg))))&0x07))); } while (0); } while (0); } while (0); do { if ((4) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((4)) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((arg_reg->id)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((4)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((4)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dreg)))&0x07)<<3)|(((((arg_reg->id)))&0x07))); } while (0); } while (0); } while (0); break; } if ((size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((dreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((arg_reg->id)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((size)) { case 1: *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0xb6; break; case 2: *(jit->ip)++ = (unsigned char)0x0f; *(jit->ip)++ = (unsigned char)0xb7; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dreg)))&0x07)<<3)|(((((arg_reg->id)))&0x07))); } while (0); } while (0); } while (0);
  } else {
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((arg->location.stack_pos)); __f->i = 1; __f->rd = ((sparc_f30)); __f->rs1 = ((sparc_fp)); __f->op3 = (32); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fstod_val)); __f->rd = ((dest_reg)); __f->rs1 = ((0)); __f->rs2 = ((sparc_f30)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
+  if (size == sizeof(float)) do { *(((jit->ip)))++ = (unsigned char)((0xf3)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((dreg)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((arg_reg->id)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x5a)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((dreg)))))&0x07)<<3)|(((((((arg_reg->id)))))&0x07))); } while (0); } while (0); } while (0);
+  else do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((dreg)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((arg_reg->id)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x10)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((dreg)))))&0x07)<<3)|(((((((arg_reg->id)))))&0x07))); } while (0); } while (0); } while (0);
  }
 }
-static void jit_internal_emit_get_arg_double(struct jit * jit, jit_op * op, struct jit_inp_arg * arg, int dest_reg, int associated)
+static void jit_internal_emit_alu_op(struct jit * jit, struct jit_op * op, int x86_op, int imm)
 {
- int arg_id = op->r_arg[1];
- if (associated) {
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((arg->location.reg)); __f->rs1 = ((sparc_fp)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((dest_reg)); __f->rs1 = ((sparc_fp)); __f->op3 = (32); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
+ if (imm) {
+  if (op->r_arg[0] != op->r_arg[1]) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((op->r_arg[0])))&0x07)<<3)|(((((op->r_arg[1])))&0x07))); } while (0); } while (0); } while (0);
+  do { if ((((int)(((op->r_arg[2]))) >= -128 && (int)(((op->r_arg[2]))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((x86_op))))&0x07)<<3)|((((((op->r_arg[0]))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((op->r_arg[2]))) & 0xff); ++(((jit->ip))); } while (0); } else if (((op->r_arg[0])) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((x86_op))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((x86_op))))&0x07)<<3)|((((((op->r_arg[0]))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
  } else {
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((arg->location.stack_pos)); __f->i = 1; __f->rd = ((dest_reg)); __f->rs1 = ((sparc_fp)); __f->op3 = (32); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- }
- int reg_id = jit_mkreg_ex(arg->type == (1), (3), arg_id);
- associated = (jit_internal_rmap_get(op->regmap, reg_id) == NULL);
- struct jit_inp_arg arg2;
- jit_internal_init_arg(&arg2, arg->phys_reg + 1);
- if (associated && arg2.passed_by_reg) {
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-4)); __f->i = 1; __f->rd = ((arg2.location.reg)); __f->rs1 = ((sparc_fp)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-4)); __f->i = 1; __f->rd = ((dest_reg + 1)); __f->rs1 = ((sparc_fp)); __f->op3 = (32); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- } else {
-  do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((arg2.spill_pos)); __f->i = 1; __f->rd = ((dest_reg + 1)); __f->rs1 = ((sparc_fp)); __f->op3 = (32); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
+  if (op->r_arg[0] == op->r_arg[1]) {
+   do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[2]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((x86_op))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[0]))))&0x07)<<3)|((((((op->r_arg[2]))))&0x07))); } while (0); } while (0); } while (0);
+  } else if (op->r_arg[0] == op->r_arg[2]) {
+   do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((x86_op))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[0]))))&0x07)<<3)|((((((op->r_arg[1]))))&0x07))); } while (0); } while (0); } while (0);
+  } else {
+   do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((op->r_arg[0])))&0x07)<<3)|(((((op->r_arg[1])))&0x07))); } while (0); } while (0); } while (0);
+   do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[2]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((x86_op))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[0]))))&0x07)<<3)|((((((op->r_arg[2]))))&0x07))); } while (0); } while (0); } while (0);
+  }
  }
 }
-static void jit_internal_emit_get_arg(struct jit * jit, jit_op * op)
+static void jit_internal_emit_sub_op(struct jit * jit, struct jit_op * op, int imm)
 {
- int dreg = op->r_arg[0];
- int arg_id = op->r_arg[1];
- struct jit_inp_arg * arg = &(jit_current_func_info(jit)->args[arg_id]);
- int reg_id = jit_mkreg(arg->type == JIT_FLOAT_NUM ? (1) : (0), (3), arg_id);
- int associated = (jit_internal_rmap_get(op->regmap, reg_id) != NULL);
- if (arg->type != JIT_FLOAT_NUM) jit_internal_emit_get_arg_int(jit, arg, dreg, associated);
+ if (imm) {
+  if (op->r_arg[0] != op->r_arg[1]) do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x8d; do { if (((op->r_arg[1])) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((op->r_arg[0]))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((op->r_arg[1]))&0x7) == X86_ESP) { if ((((-op->r_arg[2]))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((-op->r_arg[2])))) >= -128 && (int)((((-op->r_arg[2])))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-op->r_arg[2])))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-op->r_arg[2])))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((-op->r_arg[2]))) == 0 && (((op->r_arg[1]))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|((((((op->r_arg[1]))&0x7))&0x07))); } while (0); break; } if ((((int)((((-op->r_arg[2])))) >= -128 && (int)((((-op->r_arg[2])))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|((((((op->r_arg[1]))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-op->r_arg[2])))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|((((((op->r_arg[1]))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-op->r_arg[2])))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  else do { if ((((int)(((op->r_arg[2]))) >= -128 && (int)(((op->r_arg[2]))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((op->r_arg[0]))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((op->r_arg[2]))) & 0xff); ++(((jit->ip))); } while (0); } else if (((op->r_arg[0])) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((op->r_arg[0]))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+  return;
+ }
+ if (op->r_arg[0] == op->r_arg[1]) {
+  do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[2]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[0]))))&0x07)<<3)|((((((op->r_arg[2]))))&0x07))); } while (0); } while (0); } while (0);
+ } else if (op->r_arg[0] == op->r_arg[2]) {
+  do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[0]))))&0x07)<<3)|((((((op->r_arg[1]))))&0x07))); } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((3))&0x07)<<3)|(((((((op->r_arg[0])&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+ } else {
+  do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((op->r_arg[0])))&0x07)<<3)|(((((op->r_arg[1])))&0x07))); } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[2]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[0]))))&0x07)<<3)|((((((op->r_arg[2]))))&0x07))); } while (0); } while (0); } while (0);
+ }
+}
+static void jit_internal_emit_subx_op(struct jit * jit, struct jit_op * op, int x86_op, int imm)
+{
+ if (imm) {
+  if (op->r_arg[0] != op->r_arg[1]) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((op->r_arg[0])))&0x07)<<3)|(((((op->r_arg[1])))&0x07))); } while (0); } while (0); } while (0);
+  do { if ((((int)(((op->r_arg[2]))) >= -128 && (int)(((op->r_arg[2]))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((x86_op))))&0x07)<<3)|((((((op->r_arg[0]))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((op->r_arg[2]))) & 0xff); ++(((jit->ip))); } while (0); } else if (((op->r_arg[0])) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((x86_op))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((x86_op))))&0x07)<<3)|((((((op->r_arg[0]))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+  return;
+ }
+ if (op->r_arg[0] == op->r_arg[1]) {
+  do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[2]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((x86_op))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[0]))))&0x07)<<3)|((((((op->r_arg[2]))))&0x07))); } while (0); } while (0); } while (0);
+ } else if (op->r_arg[0] == op->r_arg[2]) {
+  do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[2])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x88; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x89; break; default: assert (0); } do { if ((((AMD64_RSP)&0x7)) == X86_ESP) { if (((-(sizeof(void *)))) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((op->r_arg[2])&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((-(sizeof(void *))))) >= -128 && (int)(((-(sizeof(void *))))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((op->r_arg[2])&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-(sizeof(void *))))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((op->r_arg[2])&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-(sizeof(void *))))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((-(sizeof(void *)))) == 0 && (((AMD64_RSP)&0x7)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((op->r_arg[2])&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); break; } if ((((int)(((-(sizeof(void *))))) >= -128 && (int)(((-(sizeof(void *))))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((op->r_arg[2])&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-(sizeof(void *))))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((op->r_arg[2])&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-(sizeof(void *))))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+  do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((op->r_arg[0])))&0x07)<<3)|(((((op->r_arg[1])))&0x07))); } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (((unsigned char)((x86_op))) << 3) + 3; do { if (((((AMD64_RSP)&0x7))) == X86_ESP) { if ((((-(sizeof(void *))))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((op->r_arg[0])&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((-(sizeof(void *)))))) >= -128 && (int)((((-(sizeof(void *)))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((op->r_arg[0])&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-(sizeof(void *)))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((op->r_arg[0])&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-(sizeof(void *)))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((-(sizeof(void *))))) == 0 && ((((AMD64_RSP)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((op->r_arg[0])&0x7))))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); break; } if ((((int)((((-(sizeof(void *)))))) >= -128 && (int)((((-(sizeof(void *)))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((op->r_arg[0])&0x7))))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-(sizeof(void *)))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((op->r_arg[0])&0x7))))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-(sizeof(void *)))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ } else {
+  do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((op->r_arg[0])))&0x07)<<3)|(((((op->r_arg[1])))&0x07))); } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[2]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((x86_op))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[0]))))&0x07)<<3)|((((((op->r_arg[2]))))&0x07))); } while (0); } while (0); } while (0);
+ }
+}
+static void jit_internal_emit_rsb_op(struct jit * jit, struct jit_op * op, int imm)
+{
+ if (imm) {
+  if (op->r_arg[0] == op->r_arg[1]) do { if ((((int)(((-op->r_arg[2]))) >= -128 && (int)(((-op->r_arg[2]))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((op->r_arg[0]))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((-op->r_arg[2]))) & 0xff); ++(((jit->ip))); } while (0); } else if (((op->r_arg[0])) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_ADD))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((op->r_arg[0]))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+  else do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x8d; do { if (((op->r_arg[1])) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((op->r_arg[0]))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((op->r_arg[1]))&0x7) == X86_ESP) { if ((((-op->r_arg[2]))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((-op->r_arg[2])))) >= -128 && (int)((((-op->r_arg[2])))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-op->r_arg[2])))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-op->r_arg[2])))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((-op->r_arg[2]))) == 0 && (((op->r_arg[1]))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|((((((op->r_arg[1]))&0x7))&0x07))); } while (0); break; } if ((((int)((((-op->r_arg[2])))) >= -128 && (int)((((-op->r_arg[2])))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|((((((op->r_arg[1]))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-op->r_arg[2])))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((op->r_arg[0]))&0x7))&0x07)<<3)|((((((op->r_arg[1]))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-op->r_arg[2])))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((3))&0x07)<<3)|(((((((op->r_arg[0])&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+  return;
+ }
+ if (op->r_arg[0] == op->r_arg[1]) {
+  do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[2]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[0]))))&0x07)<<3)|((((((op->r_arg[2]))))&0x07))); } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((3))&0x07)<<3)|(((((((op->r_arg[0])&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+ } else if (op->r_arg[0] == op->r_arg[2]) {
+  do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[0]))))&0x07)<<3)|((((((op->r_arg[1]))))&0x07))); } while (0); } while (0); } while (0);
+ } else {
+  do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[2])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((op->r_arg[0])))&0x07)<<3)|(((((op->r_arg[2])))&0x07))); } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[0]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[0]))))&0x07)<<3)|((((((op->r_arg[1]))))&0x07))); } while (0); } while (0); } while (0);
+ }
+}
+static void jit_internal_emit_mul_op(struct jit * jit, struct jit_op * op, int imm, int sign, int high_bytes)
+{
+ jit_value dest = op->r_arg[0];
+ jit_value factor1 = op->r_arg[1];
+ jit_value factor2 = op->r_arg[2];
+ if ((!high_bytes) && (imm)) {
+  switch (factor2) {
+   case 2: if (factor1 == dest) do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((dest)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((1)) == 1) { *((jit->ip))++ = (unsigned char)0xd1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); } else { *((jit->ip))++ = (unsigned char)0xc1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((1))) & 0xff); ++(((jit->ip))); } while (0); } } while (0); } while (0);
+    else do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((dest)) > 7) ? AMD64_REX_R : 0) | ((((factor1)) > 7) ? AMD64_REX_X : 0) | ((((factor1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0x8d; do { if ((((factor1))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((factor1)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && (((factor1))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+    return;
+   case 3: do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((dest)) > 7) ? AMD64_REX_R : 0) | ((((factor1)) > 7) ? AMD64_REX_X : 0) | ((((factor1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0x8d; do { if ((((factor1))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((1))))&0x03)<<6)|(((((((factor1)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && (((factor1))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((1))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((1))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((1))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); return;
+   case 4: if (factor1 != dest) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((dest)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((factor1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dest)))&0x07)<<3)|(((((factor1)))&0x07))); } while (0); } while (0); } while (0);
+    do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((dest)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((2)) == 1) { *((jit->ip))++ = (unsigned char)0xd1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); } else { *((jit->ip))++ = (unsigned char)0xc1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((2))) & 0xff); ++(((jit->ip))); } while (0); } } while (0); } while (0);
+    return;
+   case 5: do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((dest)) > 7) ? AMD64_REX_R : 0) | ((((factor1)) > 7) ? AMD64_REX_X : 0) | ((((factor1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0x8d; do { if ((((factor1))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((2))))&0x03)<<6)|(((((((factor1)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && (((factor1))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((2))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((2))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((2))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+    return;
+   case 8: if (factor1 != dest) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((dest)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((factor1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dest)))&0x07)<<3)|(((((factor1)))&0x07))); } while (0); } while (0); } while (0);
+    do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((dest)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((3)) == 1) { *((jit->ip))++ = (unsigned char)0xd1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); } else { *((jit->ip))++ = (unsigned char)0xc1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((3))) & 0xff); ++(((jit->ip))); } while (0); } } while (0); } while (0);
+    return;
+   case 9: do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((dest)) > 7) ? AMD64_REX_R : 0) | ((((factor1)) > 7) ? AMD64_REX_X : 0) | ((((factor1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0x8d; do { if ((((factor1))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((3))))&0x03)<<6)|(((((((factor1)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && (((factor1))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((3))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((3))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((dest)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((3))))&0x03)<<6)|(((((((factor1)&0x7)))&0x7)&0x07)<<3)|(((((((factor1)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+    return;
+  }
+ }
+ int ax_in_use = jit_reg_in_use(op, AMD64_RAX, 0);
+ int dx_in_use = jit_reg_in_use(op, AMD64_RDX, 0);
+ if ((dest != AMD64_RAX) && ax_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RAX) & 0x7); } while (0);
+ if ((dest != AMD64_RDX) && dx_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RDX) & 0x7); } while (0);
+ if (imm) {
+  if (factor1 != AMD64_RAX) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((factor1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RAX)))&0x07)<<3)|(((((factor1)))&0x07))); } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = ((((sizeof(void *))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((sizeof(void *))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RDX) & 0x7); if ((sizeof(void *)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(factor2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(factor2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((4 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((((((AMD64_RDX)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+ } else {
+  if (factor1 == AMD64_RAX) do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((factor2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((4 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((((((factor2)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+  else if (factor2 == AMD64_RAX) do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((factor1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((4 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((((((factor1)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+  else {
+   do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((factor1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RAX)))&0x07)<<3)|(((((factor1)))&0x07))); } while (0); } while (0); } while (0);
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((factor2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((4 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((((((factor2)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+  }
+ }
+ if (!high_bytes) {
+  if (dest != AMD64_RAX) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((dest)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dest)))&0x07)<<3)|(((((AMD64_RAX)))&0x07))); } while (0); } while (0); } while (0);
+ } else {
+  if (dest != AMD64_RDX) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((dest)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dest)))&0x07)<<3)|(((((AMD64_RDX)))&0x07))); } while (0); } while (0); } while (0);
+ }
+ if ((dest != AMD64_RDX) && dx_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RDX) & 0x7); } while (0);
+ if ((dest != AMD64_RAX) && ax_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RAX) & 0x7); } while (0);
+}
+static void jit_internal_emit_div_op(struct jit * jit, struct jit_op * op, int imm, int sign, int modulo)
+{
+ jit_value dest = op->r_arg[0];
+ jit_value dividend = op->r_arg[1];
+ jit_value divisor = op->r_arg[2];
+ if (imm && ((divisor == 2) || (divisor == 4) || (divisor == 8))) {
+  if (dest != dividend) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((dest)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((dividend)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dest)))&0x07)<<3)|(((((dividend)))&0x07))); } while (0); } while (0); } while (0);
+  if (!modulo) {
+   switch (divisor) {
+    case 2: do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((dest)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((1)) == 1) { *((jit->ip))++ = (unsigned char)0xd1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((sign ? X86_SAR : X86_SHR))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); } else { *((jit->ip))++ = (unsigned char)0xc1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((sign ? X86_SAR : X86_SHR))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((1))) & 0xff); ++(((jit->ip))); } while (0); } } while (0); } while (0); break;
+    case 4: do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((dest)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((2)) == 1) { *((jit->ip))++ = (unsigned char)0xd1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((sign ? X86_SAR : X86_SHR))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); } else { *((jit->ip))++ = (unsigned char)0xc1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((sign ? X86_SAR : X86_SHR))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((2))) & 0xff); ++(((jit->ip))); } while (0); } } while (0); } while (0); break;
+    case 8: do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((dest)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((3)) == 1) { *((jit->ip))++ = (unsigned char)0xd1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((sign ? X86_SAR : X86_SHR))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); } else { *((jit->ip))++ = (unsigned char)0xc1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((sign ? X86_SAR : X86_SHR))))&0x07)<<3)|(((((((dest)&0x7))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((3))) & 0xff); ++(((jit->ip))); } while (0); } } while (0); } while (0); break;
+   }
+   return;
+  }
+  if (modulo && !sign) {
+   switch (divisor) {
+    case 2: do { if ((((int)(((0x1))) >= -128 && (int)(((0x1))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((dest))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_AND))))&0x07)<<3)|((((((dest))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((0x1))) & 0xff); ++(((jit->ip))); } while (0); } else if (((dest)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_AND))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0x1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((dest))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_AND))))&0x07)<<3)|((((((dest))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0x1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); break;
+    case 4: do { if ((((int)(((0x3))) >= -128 && (int)(((0x3))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((dest))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_AND))))&0x07)<<3)|((((((dest))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((0x3))) & 0xff); ++(((jit->ip))); } while (0); } else if (((dest)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_AND))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0x3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((dest))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_AND))))&0x07)<<3)|((((((dest))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0x3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); break;
+    case 8: do { if ((((int)(((0x7))) >= -128 && (int)(((0x7))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((dest))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_AND))))&0x07)<<3)|((((((dest))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((0x7))) & 0xff); ++(((jit->ip))); } while (0); } else if (((dest)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_AND))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0x7))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((dest))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_AND))))&0x07)<<3)|((((((dest))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0x7))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); break;
+   }
+   return;
+  }
+ }
+ int ax_in_use = jit_reg_in_use(op, AMD64_RAX, 0);
+ int dx_in_use = jit_reg_in_use(op, AMD64_RDX, 0);
+ if ((dest != AMD64_RAX) && ax_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RAX) & 0x7); } while (0);
+ if ((dest != AMD64_RDX) && dx_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RDX) & 0x7); } while (0);
+ if (imm) {
+  if (dividend != AMD64_RAX) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((dividend)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RAX)))&0x07)<<3)|(((((dividend)))&0x07))); } while (0); } while (0); } while (0);
+  if (sign) do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *(jit->ip)++ = (unsigned char)0x99; } while (0); } while (0);
+  else do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((AMD64_RDX))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RDX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_XOR))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((AMD64_RDX))))&0x07)<<3)|((((((AMD64_RDX))))&0x07))); } while (0); } while (0); } while (0);
+  if (dest != AMD64_RBX) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RBX) & 0x7); } while (0);
+  do { do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RBX) & 0x7); if (((sizeof(void *))) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(divisor)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(divisor)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((6 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((((((AMD64_RBX)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+  if (dest != AMD64_RBX) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RBX) & 0x7); } while (0);
+ } else {
+  if ((divisor == AMD64_RAX) || (divisor == AMD64_RDX)) {
+   do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((divisor)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((divisor) & 0x7); } while (0);
+  }
+  if (dividend != AMD64_RAX) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((dividend)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RAX)))&0x07)<<3)|(((((dividend)))&0x07))); } while (0); } while (0); } while (0);
+  if (sign) do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *(jit->ip)++ = (unsigned char)0x99; } while (0); } while (0);
+  else do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((AMD64_RDX))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RDX))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_XOR))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((AMD64_RDX))))&0x07)<<3)|((((((AMD64_RDX))))&0x07))); } while (0); } while (0); } while (0);
+  if ((divisor == AMD64_RAX) || (divisor == AMD64_RDX)) {
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { if (((((AMD64_RSP)&0x7))) == X86_ESP) { if ((((0))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((6 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((6 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((6 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((0))) == 0 && ((((AMD64_RSP)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((6 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); break; } if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((6 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((6 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+   do { if ((((int)((((sizeof(void *))))) >= -128 && (int)((((sizeof(void *))))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)(((((sizeof(void *))))) & 0xff); ++(((jit->ip))); } while (0); } else if (((AMD64_RSP)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_ADD))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((sizeof(void *))))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((AMD64_RSP))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_ADD))))&0x07)<<3)|((((((AMD64_RSP))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((sizeof(void *))))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+  } else {
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((divisor)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((6 + (((sign)) ? 1 : 0)))&0x07)<<3)|(((((((divisor)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+  }
+ }
+ if (!modulo) {
+  if (dest != AMD64_RAX) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((dest)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dest)))&0x07)<<3)|(((((AMD64_RAX)))&0x07))); } while (0); } while (0); } while (0);
+ } else {
+  if (dest != AMD64_RDX) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((dest)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((dest)))&0x07)<<3)|(((((AMD64_RDX)))&0x07))); } while (0); } while (0); } while (0);
+ }
+ if ((dest != AMD64_RDX) && dx_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RDX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RDX) & 0x7); } while (0);
+ if ((dest != AMD64_RAX) && ax_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RAX) & 0x7); } while (0);
+}
+static void jit_internal_emit_shift_op(struct jit * jit, struct jit_op * op, int shift_op, int imm)
+{
+ if (imm) {
+  if (op->r_arg[0] != op->r_arg[1]) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((op->r_arg[0])))&0x07)<<3)|(((((op->r_arg[1])))&0x07))); } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((op->r_arg[2])) == 1) { *((jit->ip))++ = (unsigned char)0xd1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((shift_op))))&0x07)<<3)|(((((((op->r_arg[0])&0x7))))&0x07))); } while (0); } while (0); } else { *((jit->ip))++ = (unsigned char)0xc1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((shift_op))))&0x07)<<3)|(((((((op->r_arg[0])&0x7))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((op->r_arg[2]))) & 0xff); ++(((jit->ip))); } while (0); } } while (0); } while (0);
+ } else {
+  int destreg = op->r_arg[0];
+  int valreg = op->r_arg[1];
+  int shiftreg = op->r_arg[2];
+  if (destreg != AMD64_RCX) {
+   int cx_in_use = jit_reg_in_use(op, AMD64_RCX, 0);
+   if (cx_in_use && (shiftreg != AMD64_RCX)) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RCX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((AMD64_RCX) & 0x7); } while (0);
+   if (shiftreg != AMD64_RCX) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RCX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((shiftreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RCX)))&0x07)<<3)|(((((shiftreg)))&0x07))); } while (0); } while (0); } while (0);
+   if (destreg != valreg) {
+    if (valreg != AMD64_RCX) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((destreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((valreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((destreg)))&0x07)<<3)|(((((valreg)))&0x07))); } while (0); } while (0); } while (0);
+    else do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((destreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((AMD64_RSP)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((destreg))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((AMD64_RSP))&0x7) == X86_ESP) { if ((((0))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((destreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((destreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((destreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((0))) == 0 && (((AMD64_RSP))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((destreg))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); break; } if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((destreg))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((destreg))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+   }
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((destreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xd3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((shift_op))))&0x07)<<3)|(((((((destreg)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+   if (cx_in_use && (shiftreg != AMD64_RCX)) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RCX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RCX) & 0x7); } while (0);
+  } else {
+   jit_hw_reg * tmp = jit_get_unused_reg(jit->reg_al, op, 0);
+   int tmpreg = (tmp ? tmp->id : AMD64_RAX);
+   int tmp_in_use = jit_reg_in_use(op, tmpreg, 0);
+   if (tmp_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((tmpreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((tmpreg) & 0x7); } while (0);
+   if (tmpreg != valreg) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((tmpreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((valreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((tmpreg)))&0x07)<<3)|(((((valreg)))&0x07))); } while (0); } while (0); } while (0);
+   if (shiftreg != AMD64_RCX) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RCX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((shiftreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RCX)))&0x07)<<3)|(((((shiftreg)))&0x07))); } while (0); } while (0); } while (0);
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((tmpreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xd3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((shift_op))))&0x07)<<3)|(((((((tmpreg)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+   do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((destreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((tmpreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((destreg)))&0x07)<<3)|(((((tmpreg)))&0x07))); } while (0); } while (0); } while (0);
+   if (tmp_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((tmpreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((tmpreg) & 0x7); } while (0);
+  }
+ }
+}
+static void jit_internal_emit_cond_op(struct jit * jit, struct jit_op * op, int amd64_cond, int imm, int sign)
+{
+ if (imm) do { if ((((int)(((op->r_arg[2]))) >= -128 && (int)(((op->r_arg[2]))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_CMP))))&0x07)<<3)|((((((op->r_arg[1]))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((op->r_arg[2]))) & 0xff); ++(((jit->ip))); } while (0); } else if (((op->r_arg[1])) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_CMP))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_CMP))))&0x07)<<3)|((((((op->r_arg[1]))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ else do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[2]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_CMP))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[1]))))&0x07)<<3)|((((((op->r_arg[2]))))&0x07))); } while (0); } while (0); } while (0);
+ if ((op->r_arg[0] != AMD64_RSI) && (op->r_arg[0] != AMD64_RDI)) {
+  do { do { unsigned char _amd64_rex_bits = ((((sizeof(void *))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((sizeof(void *))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((op->r_arg[0]) & 0x7); if ((sizeof(void *)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(0)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(0)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = (((1) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((1) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { assert(1); *((jit->ip))++ = (unsigned char)0x0f; if (((sign))) *((jit->ip))++ = jit_internal_x86_cc_signed_map [((amd64_cond))] + 0x20; else *((jit->ip))++ = jit_internal_x86_cc_unsigned_map [((amd64_cond))] + 0x20; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((0))&0x07)<<3)|(((((((op->r_arg[0])&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+ } else {
+  do { do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if ((((sizeof(void *))) == 8 ? 4 : ((sizeof(void *)))) == 1) *((jit->ip))++ = (unsigned char)0x86; else *((jit->ip))++ = (unsigned char)0x87; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|(((((((op->r_arg[0])&0x7))))&0x07)<<3)|(((((((AMD64_RAX)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = ((((sizeof(void *))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((sizeof(void *))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RAX) & 0x7); if ((sizeof(void *)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(0)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(0)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = (((1) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((1) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { assert(1); *((jit->ip))++ = (unsigned char)0x0f; if (((sign))) *((jit->ip))++ = jit_internal_x86_cc_signed_map [((amd64_cond))] + 0x20; else *((jit->ip))++ = jit_internal_x86_cc_unsigned_map [((amd64_cond))] + 0x20; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((0))&0x07)<<3)|(((((((AMD64_RAX)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+  do { do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if ((((sizeof(void *))) == 8 ? 4 : ((sizeof(void *)))) == 1) *((jit->ip))++ = (unsigned char)0x86; else *((jit->ip))++ = (unsigned char)0x87; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|(((((((op->r_arg[0])&0x7))))&0x07)<<3)|(((((((AMD64_RAX)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+ }
+}
+static void jit_internal_emit_branch_op(struct jit * jit, struct jit_op * op, int cond, int imm, int sign)
+{
+ if (imm) do { if ((((int)(((op->r_arg[2]))) >= -128 && (int)(((op->r_arg[2]))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_CMP))))&0x07)<<3)|((((((op->r_arg[1]))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((op->r_arg[2]))) & 0xff); ++(((jit->ip))); } while (0); } else if (((op->r_arg[1])) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_CMP))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_CMP))))&0x07)<<3)|((((((op->r_arg[1]))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ else do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[2]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_CMP))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[1]))))&0x07)<<3)|((((((op->r_arg[2]))))&0x07))); } while (0); } while (0); } while (0);
+ op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { int offset = (((!jit_is_label(jit, (void *)(op->r_arg[0])) ? (op->r_arg[0]) : (((jit_value)jit->buf + ((jit_label *)(op->r_arg[0]))->pos - (jit_value)jit->ip))))) - 6; do { *(((jit->ip)))++ = (unsigned char)0x0f; if ((((sign)))) *(((jit->ip)))++ = jit_internal_x86_cc_signed_map [(((cond)))] + 0x10; else *(((jit->ip)))++ = jit_internal_x86_cc_unsigned_map [(((cond)))] + 0x10; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((offset)); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } while (0); } while (0); } while (0);
+}
+static void jit_internal_emit_branch_mask_op(struct jit * jit, struct jit_op * op, int cond, int imm)
+{
+ if (imm) do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if ((((op->r_arg[1])&0x7)) == X86_EAX) { *((jit->ip))++ = (unsigned char)0xa9; } else { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((0))&0x07)<<3)|(((((((op->r_arg[1])&0x7))))&0x07))); } while (0); } while (0); } do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); } while (0);
+ else do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((op->r_arg[1])) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[2])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0x85; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|(((((((op->r_arg[2])&0x7))))&0x07)<<3)|(((((((op->r_arg[1])&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+ op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { int offset = (((!jit_is_label(jit, (void *)(op->r_arg[0])) ? (op->r_arg[0]) : (((jit_value)jit->buf + ((jit_label *)(op->r_arg[0]))->pos - (jit_value)jit->ip))))) - 6; do { *(((jit->ip)))++ = (unsigned char)0x0f; if ((((0)))) *(((jit->ip)))++ = jit_internal_x86_cc_signed_map [(((cond)))] + 0x10; else *(((jit->ip)))++ = jit_internal_x86_cc_unsigned_map [(((cond)))] + 0x10; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((offset)); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } while (0); } while (0); } while (0);
+}
+static void jit_internal_emit_branch_overflow_op(struct jit * jit, struct jit_op * op, int alu_op, int imm, int negation)
+{
+ if (imm) do { if ((((int)(((op->r_arg[2]))) >= -128 && (int)(((op->r_arg[2]))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((alu_op))))&0x07)<<3)|((((((op->r_arg[1]))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((op->r_arg[2]))) & 0xff); ++(((jit->ip))); } while (0); } else if (((op->r_arg[1])) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((alu_op))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((alu_op))))&0x07)<<3)|((((((op->r_arg[1]))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((op->r_arg[2]))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ else do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[2]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((alu_op))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((op->r_arg[1]))))&0x07)<<3)|((((((op->r_arg[2]))))&0x07))); } while (0); } while (0); } while (0);
+ op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
+ if (!negation) do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { int offset = (((!jit_is_label(jit, (void *)(op->r_arg[0])) ? (op->r_arg[0]) : (((jit_value)jit->buf + ((jit_label *)(op->r_arg[0]))->pos - (jit_value)jit->ip))))) - 6; do { *(((jit->ip)))++ = (unsigned char)0x0f; if ((((0)))) *(((jit->ip)))++ = jit_internal_x86_cc_signed_map [(((jit_internal_X86_CC_O)))] + 0x10; else *(((jit->ip)))++ = jit_internal_x86_cc_unsigned_map [(((jit_internal_X86_CC_O)))] + 0x10; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((offset)); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } while (0); } while (0); } while (0);
+ else do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { int offset = (((!jit_is_label(jit, (void *)(op->r_arg[0])) ? (op->r_arg[0]) : (((jit_value)jit->buf + ((jit_label *)(op->r_arg[0]))->pos - (jit_value)jit->ip))))) - 6; do { *(((jit->ip)))++ = (unsigned char)0x0f; if ((((0)))) *(((jit->ip)))++ = jit_internal_x86_cc_signed_map [(((jit_internal_X86_CC_NO)))] + 0x10; else *(((jit->ip)))++ = jit_internal_x86_cc_unsigned_map [(((jit_internal_X86_CC_NO)))] + 0x10; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((offset)); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } while (0); } while (0); } while (0);
+}
+static int jit_internal_is_spilled(jit_value arg_id, jit_op * prepare_op, int * reg)
+{
+        jit_hw_reg * hreg = jit_internal_rmap_get(prepare_op->regmap, arg_id);
+        if (hreg) {
+                *reg = hreg->id;
+                return 0;
+        } else return 1;
+}
+static void jit_internal_emit_ld_op(struct jit * jit, jit_op * op, jit_value a1, jit_value a2)
+{
+ if (op->arg_size == (sizeof(void *))) {
+  if ((op->code & 0x02)) do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((a1))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+  else do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((a2)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((a2))&0x7) == X86_ESP) { if ((((0))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((0))) == 0 && (((a2))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); break; } if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  return;
+ }
+ switch (op->code) {
+  case (JIT_LD | 0x02 | 0x00): do { if ((op->arg_size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x63; do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((a1))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0); break; } do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0xbe; break; case 2: *(jit->ip)++ = (unsigned char)0xbf; break; default: assert (0); } do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((a1))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0); break;
+  case (JIT_LD | 0x02 | 0x04): do { if ((op->arg_size) == 8) { do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((a1))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0); break; } if ((op->arg_size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((a1))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_XOR))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((a1))))&0x07)<<3)|((((((a1))))&0x07))); } while (0); } while (0); } while (0); do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((a1))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0); break; } do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0xb6; break; case 2: *(jit->ip)++ = (unsigned char)0xb7; break; default: assert (0); } do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((a1)&0x7)&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0); break;
+  case (JIT_LD | 0x01 | 0x00): do { if ((op->arg_size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x63; do { if ((((a2)&0x7)) == X86_ESP) { if (((0)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((0)) == 0 && (((a2)&0x7)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|((((((a2)&0x7)))&0x07))); } while (0); break; } if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|((((((a2)&0x7)))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|((((((a2)&0x7)))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break; } do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; switch (op->arg_size) { case 1: *(jit->ip)++ = (unsigned char)0xbe; break; case 2: *(jit->ip)++ = (unsigned char)0xbf; break; default: assert(0); } do { if (((a2)&0x7) == X86_ESP) { if (((0)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((0)) == 0 && ((a2)&0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); break; } if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break;
+  case (JIT_LD | 0x01 | 0x04): do { if ((op->arg_size) == 8) { do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((a2)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((a2))&0x7) == X86_ESP) { if ((((0))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((0))) == 0 && (((a2))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); break; } if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break; } if ((op->arg_size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((a1))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_XOR))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((a1))))&0x07)<<3)|((((((a1))))&0x07))); } while (0); } while (0); } while (0); do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((a2)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((a2))&0x7) == X86_ESP) { if ((((0))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((0))) == 0 && (((a2))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); break; } if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break; } do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; switch (op->arg_size) { case 1: *(jit->ip)++ = (unsigned char)0xb6; break; case 2: *(jit->ip)++ = (unsigned char)0xb7; break; default: assert(0); } do { if (((a2)&0x7) == X86_ESP) { if (((0)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((0)) == 0 && ((a2)&0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); break; } if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break;
+  default: assert(0);
+ }
+}
+static void jit_internal_emit_ldx_op(struct jit * jit, jit_op * op, jit_value a1, jit_value a2, jit_value a3)
+{
+ if (op->arg_size == (sizeof(void *))) {
+  if ((op->code & 0x02)) do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((a2)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((a2))&0x7) == X86_ESP) { if ((((a3))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((a3)))) >= -128 && (int)((((a3)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((a3)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((a3))) == 0 && (((a2))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); break; } if ((((int)((((a3)))) >= -128 && (int)((((a3)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((a3)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  else do { do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a3)) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { switch (((op->arg_size) == 8 ? 4 : (op->arg_size))) { case 1: *((jit->ip))++ = (unsigned char)0x8a; break; case 2: *((jit->ip))++ = (unsigned char)0x66; case 4: *((jit->ip))++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((((a2)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && ((((a2)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|((((((((a2)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|((((((((a2)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|((((((((a2)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  return;
+ }
+ switch (op->code) {
+  case (JIT_LDX | 0x02 | 0x00): do { if ((op->arg_size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x63; do { if ((((a2)&0x7)) == X86_ESP) { if (((a3)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((a3))) >= -128 && (int)(((a3))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a3))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((a3)) == 0 && (((a2)&0x7)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|((((((a2)&0x7)))&0x07))); } while (0); break; } if ((((int)(((a3))) >= -128 && (int)(((a3))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|((((((a2)&0x7)))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a3))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((a1)&0x7)))&0x07)<<3)|((((((a2)&0x7)))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break; } do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; switch (op->arg_size) { case 1: *(jit->ip)++ = (unsigned char)0xbe; break; case 2: *(jit->ip)++ = (unsigned char)0xbf; break; default: assert(0); } do { if (((a2)&0x7) == X86_ESP) { if (((a3)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((a3))) >= -128 && (int)(((a3))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a3))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((a3)) == 0 && ((a2)&0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); break; } if ((((int)(((a3))) >= -128 && (int)(((a3))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a3))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break;
+  case (JIT_LDX | 0x02 | 0x04): do { if ((op->arg_size) == 8) { do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((a2)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((a2))&0x7) == X86_ESP) { if ((((a3))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((a3)))) >= -128 && (int)((((a3)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((a3)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((a3))) == 0 && (((a2))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); break; } if ((((int)((((a3)))) >= -128 && (int)((((a3)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((a3)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break; } if ((op->arg_size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((a1))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_XOR))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((a1))))&0x07)<<3)|((((((a1))))&0x07))); } while (0); } while (0); } while (0); do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((a2)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((a2))&0x7) == X86_ESP) { if ((((a3))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((a3)))) >= -128 && (int)((((a3)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((a3)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((a3))) == 0 && (((a2))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); break; } if ((((int)((((a3)))) >= -128 && (int)((((a3)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((a3)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break; } do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; switch (op->arg_size) { case 1: *(jit->ip)++ = (unsigned char)0xb6; break; case 2: *(jit->ip)++ = (unsigned char)0xb7; break; default: assert(0); } do { if (((a2)&0x7) == X86_ESP) { if (((a3)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((a3))) >= -128 && (int)(((a3))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a3))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((a3)) == 0 && ((a2)&0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); break; } if ((((int)(((a3))) >= -128 && (int)(((a3))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a3))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((((a2)&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break;
+  case (JIT_LDX | 0x01 | 0x00): do { if ((op->arg_size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a3)) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x63; do { if (((a2)&0x7) == (-1)) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else if (((0)) == 0 && ((a2)&0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7)&0x7)&0x07)<<3)|((((((a2)&0x7)&0x7))&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7)&0x7)&0x07)<<3)|((((((a2)&0x7)&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7)&0x7)&0x07)<<3)|((((((a2)&0x7)&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break; } do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a3)) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0xbe; break; case 2: *(jit->ip)++ = (unsigned char)0xbf; break; default: assert (0); } do { if (((a2)&0x7) == (-1)) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else if (((0)) == 0 && ((a2)&0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7)&0x7)&0x07)<<3)|((((((a2)&0x7)&0x7))&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7)&0x7)&0x07)<<3)|((((((a2)&0x7)&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7)&0x7)&0x07)<<3)|((((((a2)&0x7)&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break;
+  case (JIT_LDX | 0x01 | 0x04): do { if ((op->arg_size) == 8) { do { do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a3)) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { switch (((op->arg_size) == 8 ? 4 : (op->arg_size))) { case 1: *((jit->ip))++ = (unsigned char)0x8a; break; case 2: *((jit->ip))++ = (unsigned char)0x66; case 4: *((jit->ip))++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((((a2)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && ((((a2)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|((((((((a2)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|((((((((a2)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|((((((((a2)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break; } if ((op->arg_size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((a1))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_XOR))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((a1))))&0x07)<<3)|((((((a1))))&0x07))); } while (0); } while (0); } while (0); do { do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a3)) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { switch (((op->arg_size) == 8 ? 4 : (op->arg_size))) { case 1: *((jit->ip))++ = (unsigned char)0x8a; break; case 2: *((jit->ip))++ = (unsigned char)0x66; case 4: *((jit->ip))++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((((a2)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && ((((a2)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|((((((((a2)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|((((((((a2)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|((((((((a2)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break; } do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a3)) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0xb6; break; case 2: *(jit->ip)++ = (unsigned char)0xb7; break; default: assert (0); } do { if (((a2)&0x7) == (-1)) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else if (((0)) == 0 && ((a2)&0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7)&0x7)&0x07)<<3)|((((((a2)&0x7)&0x7))&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7)&0x7)&0x07)<<3)|((((((a2)&0x7)&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((a1)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((a3)&0x7)&0x7)&0x07)<<3)|((((((a2)&0x7)&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break;
+  default: assert(0);
+ }
+}
+struct transfer_info {
+ int sourcereg;
+ int destreg;
+ int scrapreg;
+ int scrap_in_use;
+ int counterreg;
+ int counter_in_use;
+ int block_size;
+ unsigned char *loop_addr;
+};
+static void jit_internal_emit_transfer_init(struct jit * jit, jit_op * op, jit_value destreg, jit_value srcreg, jit_value cnt, int block_size)
+{
+ struct transfer_info *tinf = malloc(sizeof(struct transfer_info));
+ tinf->sourcereg = srcreg;
+ tinf->destreg = destreg;
+ tinf->block_size = block_size;
+ jit_hw_reg * scrap = jit_get_unused_reg_with_index(jit->reg_al, op, 0, 0);
+ if (scrap) tinf->scrapreg = scrap->id;
  else {
-  if (arg->size == sizeof(float)) jit_internal_emit_get_arg_float(jit, arg, dreg, associated);
-  if (arg->size == sizeof(double)) jit_internal_emit_get_arg_double(jit, op, arg, dreg, associated);
+  for (int i = 0; i < jit->reg_al->gp_reg_cnt; i++) {
+   jit_hw_reg *r = &jit->reg_al->gp_regs[i];
+   if ((r->id != srcreg) && (r->id != destreg) && (!(op->code & 0x02) && (r->id != cnt))) {
+    tinf->scrapreg = r->id;
+    break;
+   }
+  }
  }
+ tinf->scrap_in_use = jit_reg_in_use(op, tinf->scrapreg, 0);
+ if ((op->code & 0x02)) {
+  jit_hw_reg * counter = jit_get_unused_reg_with_index(jit->reg_al, op, 0, 1);
+  if (counter) tinf->counterreg = counter->id;
+  else {
+   for (int i = 0; i < jit->reg_al->gp_reg_cnt; i++) {
+    jit_hw_reg *r = &jit->reg_al->gp_regs[i];
+    if ((r->id != srcreg) && (r->id != destreg) && (r->id != tinf->scrapreg)) {
+     tinf->counterreg = r->id;
+     break;
+    }
+   }
+  }
+  tinf->counter_in_use = jit_reg_in_use(op, tinf->counterreg, 0);
+ } else {
+  if (jit_set_get(op->live_out, op->arg[2])) {
+   jit_hw_reg * counter = jit_get_unused_reg_with_index(jit->reg_al, op, 0, 1);
+   tinf->counterreg = (counter ? counter->id : cnt);
+   tinf->counter_in_use = jit_reg_in_use(op, tinf->counterreg, 0);
+  } else {
+   tinf->counterreg = cnt;
+   tinf->counter_in_use = 0;
+  }
+ }
+ if (tinf->counter_in_use) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((tinf->counterreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x88; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x89; break; default: assert (0); } do { if ((((AMD64_RSP)&0x7)) == X86_ESP) { if (((-(sizeof(void *)))) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((tinf->counterreg)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((-(sizeof(void *))))) >= -128 && (int)(((-(sizeof(void *))))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((tinf->counterreg)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-(sizeof(void *))))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((tinf->counterreg)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-(sizeof(void *))))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((-(sizeof(void *)))) == 0 && (((AMD64_RSP)&0x7)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((tinf->counterreg)&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); break; } if ((((int)(((-(sizeof(void *))))) >= -128 && (int)(((-(sizeof(void *))))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((tinf->counterreg)&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-(sizeof(void *))))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((tinf->counterreg)&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-(sizeof(void *))))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+ if (tinf->scrap_in_use) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((tinf->scrapreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x88; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x89; break; default: assert (0); } do { if ((((AMD64_RSP)&0x7)) == X86_ESP) { if (((-(sizeof(void *)) * 2)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((tinf->scrapreg)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((-(sizeof(void *)) * 2))) >= -128 && (int)(((-(sizeof(void *)) * 2))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((tinf->scrapreg)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-(sizeof(void *)) * 2))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((tinf->scrapreg)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-(sizeof(void *)) * 2))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((-(sizeof(void *)) * 2)) == 0 && (((AMD64_RSP)&0x7)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((tinf->scrapreg)&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); break; } if ((((int)(((-(sizeof(void *)) * 2))) >= -128 && (int)(((-(sizeof(void *)) * 2))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((tinf->scrapreg)&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-(sizeof(void *)) * 2))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((tinf->scrapreg)&0x7)))&0x07)<<3)|((((((AMD64_RSP)&0x7)))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-(sizeof(void *)) * 2))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+ if ((op->code & 0x02)) do { do { unsigned char _amd64_rex_bits = ((((sizeof(void *))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((tinf->counterreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((sizeof(void *))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((tinf->counterreg) & 0x7); if ((sizeof(void *)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(cnt * block_size)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(cnt * block_size)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+ else if ((tinf->counterreg != cnt) || block_size > 1) {
+  int shift;
+  if (block_size == 1) shift = 0;
+  else if (block_size == 2) shift = 1;
+  else if (block_size == 4) shift = 2;
+  else if (block_size == 8) shift = 3;
+  else assert(0);
+  do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((tinf->counterreg)) > 7) ? AMD64_REX_R : 0) | ((((cnt)) > 7) ? AMD64_REX_X : 0) | (((((-1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0x8d; do { if (((((-1)))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->counterreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((shift))))&0x03)<<6)|(((((((cnt)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && ((((-1)))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->counterreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((shift))))&0x03)<<6)|(((((((cnt)&0x7)))&0x7)&0x07)<<3)|((((((((-1))))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((tinf->counterreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((shift))))&0x03)<<6)|(((((((cnt)&0x7)))&0x7)&0x07)<<3)|((((((((-1))))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((tinf->counterreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((shift))))&0x03)<<6)|(((((((cnt)&0x7)))&0x7)&0x07)<<3)|((((((((-1))))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ }
+ tinf->loop_addr = jit->ip;
+ op->addendum = tinf;
+ if (block_size == (sizeof(void *))) do { do { unsigned char _amd64_rex_bits = ((((block_size)) > 4) ? AMD64_REX_W : 0) | ((((tinf->scrapreg)) > 7) ? AMD64_REX_R : 0) | ((((tinf->counterreg)) > 7) ? AMD64_REX_X : 0) | ((((srcreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((block_size)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { switch (((block_size) == 8 ? 4 : (block_size))) { case 1: *((jit->ip))++ = (unsigned char)0x8a; break; case 2: *((jit->ip))++ = (unsigned char)0x66; case 4: *((jit->ip))++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((((srcreg)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((-block_size))) == 0 && ((((srcreg)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((srcreg)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((-block_size)))) >= -128 && (int)((((-block_size)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((srcreg)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-block_size)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((srcreg)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ else do { if ((block_size) == 4) { do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((tinf->scrapreg)) > 7) ? AMD64_REX_R : 0) | ((((tinf->counterreg)) > 7) ? AMD64_REX_X : 0) | ((((srcreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x63; do { if (((srcreg)&0x7) == (-1)) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((tinf->scrapreg)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((tinf->counterreg)&0x7))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-block_size))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else if (((-block_size)) == 0 && ((srcreg)&0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((tinf->scrapreg)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((tinf->counterreg)&0x7)&0x7)&0x07)<<3)|((((((srcreg)&0x7)&0x7))&0x07))); } while (0); } else if ((((int)(((-block_size))) >= -128 && (int)(((-block_size))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((tinf->scrapreg)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((tinf->counterreg)&0x7)&0x7)&0x07)<<3)|((((((srcreg)&0x7)&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-block_size))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((tinf->scrapreg)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((tinf->counterreg)&0x7)&0x7)&0x07)<<3)|((((((srcreg)&0x7)&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-block_size))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break; } do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((tinf->scrapreg)) > 7) ? AMD64_REX_R : 0) | ((((tinf->counterreg)) > 7) ? AMD64_REX_X : 0) | ((((srcreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x0f; switch ((block_size)) { case 1: *(jit->ip)++ = (unsigned char)0xbe; break; case 2: *(jit->ip)++ = (unsigned char)0xbf; break; default: assert (0); } do { if (((srcreg)&0x7) == (-1)) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((tinf->scrapreg)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((tinf->counterreg)&0x7))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-block_size))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else if (((-block_size)) == 0 && ((srcreg)&0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((tinf->scrapreg)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((tinf->counterreg)&0x7)&0x7)&0x07)<<3)|((((((srcreg)&0x7)&0x7))&0x07))); } while (0); } else if ((((int)(((-block_size))) >= -128 && (int)(((-block_size))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|(((((tinf->scrapreg)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((tinf->counterreg)&0x7)&0x7)&0x07)<<3)|((((((srcreg)&0x7)&0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((-block_size))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|(((((tinf->scrapreg)&0x7))&0x07)<<3)|(((4)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((((0)))&0x03)<<6)|(((((tinf->counterreg)&0x7)&0x7)&0x07)<<3)|((((((srcreg)&0x7)&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-block_size))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
 }
-void jit_patch_external_calls(struct jit * jit)
+static void jit_internal_emit_transfer_loop(struct jit *jit, jit_op *op)
 {
- for (jit_op * op = jit_op_first(jit->ops); op != NULL; op = op->next) {
-  if ((op->code == (JIT_CALL | 0x02)) && (!jit_is_label(jit, (void *)op->arg[0])))
-   do { long __p = ((long)((long)op->r_arg[0])) >> 2; long __t = ((long)(jit->buf + (long)op->patch_addr)) >> 2; long __location = (__p - __t); jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(jit->buf + (long)op->patch_addr); if (__f->op == 0) { *(int *)(jit->buf + (long)op->patch_addr) &= ~(0x03fffff); *(int *)(jit->buf + (long)op->patch_addr) |= (0x03fffff & __location); } else { *(int *)(jit->buf + (long)op->patch_addr) &= ~(0x3fffffff); *(int *)(jit->buf + (long)op->patch_addr) |= (0x3fffffff & __location); } } while (0);;
-  if (((jit_opcode) (op->code & 0xfff8)) == JIT_MSG)
-   do { long __p = ((long)(printf)) >> 2; long __t = ((long)(jit->buf + (long)op->patch_addr)) >> 2; long __location = (__p - __t); jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(jit->buf + (long)op->patch_addr); if (__f->op == 0) { *(int *)(jit->buf + (long)op->patch_addr) &= ~(0x03fffff); *(int *)(jit->buf + (long)op->patch_addr) |= (0x03fffff & __location); } else { *(int *)(jit->buf + (long)op->patch_addr) &= ~(0x3fffffff); *(int *)(jit->buf + (long)op->patch_addr) |= (0x3fffffff & __location); } } while (0);;
+ struct transfer_info *tinf = (struct transfer_info *)op->addendum;
+ jit_value loop = (jit_value) tinf->loop_addr;
+ do { do { unsigned char _amd64_rex_bits = ((((tinf->block_size)) > 4) ? AMD64_REX_W : 0) | ((((tinf->scrapreg)) > 7) ? AMD64_REX_R : 0) | ((((tinf->counterreg)) > 7) ? AMD64_REX_X : 0) | ((((tinf->destreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((tinf->block_size)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { switch (((tinf->block_size) == 8 ? 4 : (tinf->block_size))) { case 1: *((jit->ip))++ = (unsigned char)0x88; break; case 2: *((jit->ip))++ = (unsigned char)0x66; case 4: *((jit->ip))++ = (unsigned char)0x89; break; default: assert (0); } do { if (((((tinf->destreg)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-tinf->block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((-tinf->block_size))) == 0 && ((((tinf->destreg)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((tinf->destreg)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((-tinf->block_size)))) >= -128 && (int)((((-tinf->block_size)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((tinf->destreg)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-tinf->block_size)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((tinf->destreg)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-tinf->block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ do { if ((((int)(((tinf->block_size))) >= -128 && (int)(((tinf->block_size))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((tinf->counterreg))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((tinf->counterreg))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((tinf->block_size))) & 0xff); ++(((jit->ip))); } while (0); } else if (((tinf->counterreg)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((tinf->block_size))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((tinf->counterreg))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((tinf->counterreg))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((tinf->block_size))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { int offset = ((loop - (jit_value) jit->ip)) - 2; if ((((int)((offset)) >= -128 && (int)((offset)) <= 127))) do { if ((((0)))) *(((jit->ip)))++ = jit_internal_x86_cc_signed_map [(((jit_internal_X86_CC_NZ)))]; else *(((jit->ip)))++ = jit_internal_x86_cc_unsigned_map [(((jit_internal_X86_CC_NZ)))]; do { *((((jit->ip)))) = (unsigned char)(((offset)) & 0xff); ++((((jit->ip)))); } while (0); } while (0); else { offset -= 4; do { *(((jit->ip)))++ = (unsigned char)0x0f; if ((((0)))) *(((jit->ip)))++ = jit_internal_x86_cc_signed_map [(((jit_internal_X86_CC_NZ)))] + 0x10; else *(((jit->ip)))++ = jit_internal_x86_cc_unsigned_map [(((jit_internal_X86_CC_NZ)))] + 0x10; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((offset)); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } while (0); } } while (0); } while (0);
+ if (tinf->counter_in_use) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((tinf->counterreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((AMD64_RSP)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((tinf->counterreg))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-(sizeof(void *))))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((AMD64_RSP))&0x7) == X86_ESP) { if ((((-(sizeof(void *))))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((tinf->counterreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((-(sizeof(void *)))))) >= -128 && (int)((((-(sizeof(void *)))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((tinf->counterreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-(sizeof(void *)))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((tinf->counterreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-(sizeof(void *)))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((-(sizeof(void *))))) == 0 && (((AMD64_RSP))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((tinf->counterreg))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); break; } if ((((int)((((-(sizeof(void *)))))) >= -128 && (int)((((-(sizeof(void *)))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((tinf->counterreg))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-(sizeof(void *)))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((tinf->counterreg))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-(sizeof(void *)))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ if (tinf->scrap_in_use) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((tinf->scrapreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { if (((AMD64_RSP)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((tinf->scrapreg))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((-(sizeof(void *)) * 2))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((AMD64_RSP))&0x7) == X86_ESP) { if ((((-(sizeof(void *)) * 2))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((tinf->scrapreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((-(sizeof(void *)) * 2)))) >= -128 && (int)((((-(sizeof(void *)) * 2)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((tinf->scrapreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-(sizeof(void *)) * 2)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((tinf->scrapreg))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-(sizeof(void *)) * 2)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((-(sizeof(void *)) * 2))) == 0 && (((AMD64_RSP))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((tinf->scrapreg))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); break; } if ((((int)((((-(sizeof(void *)) * 2)))) >= -128 && (int)((((-(sizeof(void *)) * 2)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((tinf->scrapreg))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-(sizeof(void *)) * 2)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((tinf->scrapreg))&0x7))&0x07)<<3)|((((((AMD64_RSP))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-(sizeof(void *)) * 2)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+}
+static void jit_internal_emit_transfer_op(struct jit *jit, jit_op *op, int alu_op)
+{
+ jit_op *init_op = op->prev;
+ while (((jit_opcode) (init_op->code & 0xfff8)) != JIT_TRANSFER)
+  init_op = init_op->prev;
+ struct transfer_info *tinf = (struct transfer_info *)init_op->addendum;
+ if (op->arg[1] == (((((0)) & 0x01) | ((((2)) & 0x03) << 1) | ((1) & 0xfffffff) << 4))) {
+  do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((tinf->scrapreg)) > 7) ? AMD64_REX_R : 0) | ((((tinf->counterreg)) > 7) ? AMD64_REX_X : 0) | ((((tinf->destreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (((unsigned char)((alu_op))) << 3) + 3; do { if (((((tinf->destreg)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-tinf->block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((-tinf->block_size))) == 0 && ((((tinf->destreg)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((tinf->destreg)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((-tinf->block_size)))) >= -128 && (int)((((-tinf->block_size)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((tinf->destreg)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-tinf->block_size)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((tinf->counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((tinf->destreg)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-tinf->block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ } else if (op->r_arg[1] != -1) {
+  if ((op->r_arg[1] == tinf->counterreg) && (tinf->counter_in_use)) {
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((tinf->scrapreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (((unsigned char)((alu_op))) << 3) + 3; do { if (((((AMD64_RSP)&0x7))) == X86_ESP) { if ((((-(sizeof(void *))))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((-(sizeof(void *)))))) >= -128 && (int)((((-(sizeof(void *)))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-(sizeof(void *)))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-(sizeof(void *)))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((-(sizeof(void *))))) == 0 && ((((AMD64_RSP)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); break; } if ((((int)((((-(sizeof(void *)))))) >= -128 && (int)((((-(sizeof(void *)))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-(sizeof(void *)))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-(sizeof(void *)))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  } else if ((op->r_arg[1] == tinf->scrapreg) && (tinf->scrap_in_use)) {
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((tinf->scrapreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (((unsigned char)((alu_op))) << 3) + 3; do { if (((((AMD64_RSP)&0x7))) == X86_ESP) { if ((((-(sizeof(void *)) * 2))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((-(sizeof(void *)) * 2)))) >= -128 && (int)((((-(sizeof(void *)) * 2)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-(sizeof(void *)) * 2)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-(sizeof(void *)) * 2)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((-(sizeof(void *)) * 2))) == 0 && ((((AMD64_RSP)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); break; } if ((((int)((((-(sizeof(void *)) * 2)))) >= -128 && (int)((((-(sizeof(void *)) * 2)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-(sizeof(void *)) * 2)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((((((AMD64_RSP)&0x7))))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-(sizeof(void *)) * 2)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+  } else do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((tinf->scrapreg))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((op->r_arg[1]))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((alu_op))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((tinf->scrapreg))))&0x07)<<3)|((((((op->r_arg[1]))))&0x07))); } while (0); } while (0); } while (0);
  }
+ else do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((tinf->scrapreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (((unsigned char)((alu_op))) << 3) + 3; do { if (((((AMD64_RBP)&0x7))) == X86_ESP) { if ((((jit_internal_GET_REG_POS(jit, op->arg[1])))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((jit_internal_GET_REG_POS(jit, op->arg[1]))))) >= -128 && (int)((((jit_internal_GET_REG_POS(jit, op->arg[1]))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((jit_internal_GET_REG_POS(jit, op->arg[1]))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((jit_internal_GET_REG_POS(jit, op->arg[1]))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((jit_internal_GET_REG_POS(jit, op->arg[1])))) == 0 && ((((AMD64_RBP)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((((((AMD64_RBP)&0x7))))&0x07))); } while (0); break; } if ((((int)((((jit_internal_GET_REG_POS(jit, op->arg[1]))))) >= -128 && (int)((((jit_internal_GET_REG_POS(jit, op->arg[1]))))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((((((AMD64_RBP)&0x7))))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((jit_internal_GET_REG_POS(jit, op->arg[1]))))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((tinf->scrapreg)&0x7))))&0x07)<<3)|(((((((AMD64_RBP)&0x7))))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((jit_internal_GET_REG_POS(jit, op->arg[1]))))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ if (op->arg[0]) jit_internal_emit_transfer_loop(jit, (jit_op *)op->arg[0]);
+}
+static void jit_internal_emit_memcpy(struct jit * jit, jit_op * op, jit_value a1, jit_value a2, jit_value a3)
+{
+ jit_internal_emit_transfer_init(jit, op, a1, a2, a3, 1);
+ jit_internal_emit_transfer_loop(jit, op);
+}
+static void jit_internal_emit_memset(struct jit *jit, jit_op *op, jit_value a1, jit_value a2, jit_value a3, int block_size)
+{
+ jit_hw_reg * counter = jit_get_unused_reg_with_index(jit->reg_al, op, 0, 0);
+ int counterreg = 0;
+ if (counter) counterreg = counter->id;
+ else {
+  for (int i = 0; i < jit->reg_al->gp_reg_cnt; i++) {
+   jit_hw_reg *r = &jit->reg_al->gp_regs[i];
+   if ((r->id != a1) && (r->id != a2) && (!(op->code & 0x02) && (r->id != a3))) {
+    counterreg = r->id;
+    break;
+   }
+  }
+ }
+        int counter_in_use = jit_reg_in_use(op, counterreg, 0);
+ if (counter_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((counterreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x50 + ((counterreg) & 0x7); } while (0);
+ do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((counterreg)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((counterreg)))&0x07)<<3)|(((((a2)))&0x07))); } while (0); } while (0); } while (0);
+ if (block_size == 2) do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((counterreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((1)) == 1) { *((jit->ip))++ = (unsigned char)0xd1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((counterreg)&0x7))))&0x07))); } while (0); } while (0); } else { *((jit->ip))++ = (unsigned char)0xc1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((counterreg)&0x7))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((1))) & 0xff); ++(((jit->ip))); } while (0); } } while (0); } while (0);
+ if (block_size == 4) do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((counterreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((2)) == 1) { *((jit->ip))++ = (unsigned char)0xd1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((counterreg)&0x7))))&0x07))); } while (0); } while (0); } else { *((jit->ip))++ = (unsigned char)0xc1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((counterreg)&0x7))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((2))) & 0xff); ++(((jit->ip))); } while (0); } } while (0); } while (0);
+ if (block_size == 8) do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((counterreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((3)) == 1) { *((jit->ip))++ = (unsigned char)0xd1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((counterreg)&0x7))))&0x07))); } while (0); } while (0); } else { *((jit->ip))++ = (unsigned char)0xc1; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SHL))))&0x07)<<3)|(((((((counterreg)&0x7))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((3))) & 0xff); ++(((jit->ip))); } while (0); } } while (0); } while (0);
+ jit_value loop = (jit_value) jit->ip;
+ if ((op->code & 0x02))
+  do { do { unsigned char _amd64_rex_bits = ((((block_size)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | ((((counterreg)) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((block_size)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((block_size) == 8 ? 4 : (block_size)) == 1) { *((jit->ip))++ = (unsigned char)0xc6; do { if (((((a1)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((-block_size))) == 0 && ((((a1)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((-block_size)))) >= -128 && (int)((((-block_size)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-block_size)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); do { *(((jit->ip))) = (unsigned char)((((a3))) & 0xff); ++(((jit->ip))); } while (0); } else if (((block_size) == 8 ? 4 : (block_size)) == 2) { *((jit->ip))++ = (unsigned char)0x66; *((jit->ip))++ = (unsigned char)0xc7; do { if (((((a1)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((-block_size))) == 0 && ((((a1)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((-block_size)))) >= -128 && (int)((((-block_size)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-block_size)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); do { *(short*)(((jit->ip))) = (((a3))); (((jit->ip))) += 2; } while (0); } else { *((jit->ip))++ = (unsigned char)0xc7; do { if (((((a1)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((-block_size))) == 0 && ((((a1)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((-block_size)))) >= -128 && (int)((((-block_size)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-block_size)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0);
+ else
+  do { do { unsigned char _amd64_rex_bits = ((((block_size)) > 4) ? AMD64_REX_W : 0) | ((((a3)) > 7) ? AMD64_REX_R : 0) | ((((counterreg)) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((block_size)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { switch (((block_size) == 8 ? 4 : (block_size))) { case 1: *((jit->ip))++ = (unsigned char)0x88; break; case 2: *((jit->ip))++ = (unsigned char)0x66; case 4: *((jit->ip))++ = (unsigned char)0x89; break; default: assert (0); } do { if (((((a1)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((-block_size))) == 0 && ((((a1)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((-block_size)))) >= -128 && (int)((((-block_size)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((-block_size)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((counterreg)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((-block_size)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+ do { if ((((int)(((block_size))) >= -128 && (int)(((block_size))) <= 127))) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((counterreg))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x83; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((counterreg))))&0x07))); } while (0); } while (0); do { *(((jit->ip))) = (unsigned char)((((block_size))) & 0xff); ++(((jit->ip))); } while (0); } else if (((counterreg)) == AMD64_RAX) { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_SUB))) << 3) + 5; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((block_size))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((counterreg))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (unsigned char)0x81; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((X86_SUB))))&0x07)<<3)|((((((counterreg))))&0x07))); } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((block_size))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0);
+ do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { int offset = ((loop - (jit_value) jit->ip)) - 2; if ((((int)((offset)) >= -128 && (int)((offset)) <= 127))) do { if ((((0)))) *(((jit->ip)))++ = jit_internal_x86_cc_signed_map [(((jit_internal_X86_CC_NZ)))]; else *(((jit->ip)))++ = jit_internal_x86_cc_unsigned_map [(((jit_internal_X86_CC_NZ)))]; do { *((((jit->ip)))) = (unsigned char)(((offset)) & 0xff); ++((((jit->ip)))); } while (0); } while (0); else { offset -= 4; do { *(((jit->ip)))++ = (unsigned char)0x0f; if ((((0)))) *(((jit->ip)))++ = jit_internal_x86_cc_signed_map [(((jit_internal_X86_CC_NZ)))] + 0x10; else *(((jit->ip)))++ = jit_internal_x86_cc_unsigned_map [(((jit_internal_X86_CC_NZ)))] + 0x10; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((offset)); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } while (0); } } while (0); } while (0);
+ if (counter_in_use) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((counterreg)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((counterreg) & 0x7); } while (0);
+}
+int jit_allocai(struct jit * jit, int size)
+{
+ jit_value real_size = jit_value_align(size, (16));
+ jit_add_op(jit, JIT_ALLOCA | 0x02, (((0x00) << 4) | ((0x00) << 2) | (0x02)), real_size, 0, 0, 0, NULL);
+ jit_current_func_info(jit)->allocai_mem += real_size;
+ return -(jit_current_func_info(jit)->allocai_mem);
 }
 void jit_patch_local_addrs(struct jit *jit)
 {
@@ -1461,7 +2354,7 @@ void jit_patch_local_addrs(struct jit *jit)
   if ((((jit_opcode) (op->code & 0xfff8)) == JIT_REF_CODE) || (((jit_opcode) (op->code & 0xfff8)) == JIT_REF_DATA)) {
    unsigned char *buf = jit->buf + (long) op->patch_addr;
    jit_value addr = jit_is_label(jit, (void *)op->arg[1]) ? ((jit_label *)op->arg[1])->pos : op->arg[1];
-   do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((buf))); __f->op = 0; __f->rd = (((op->r_arg[0]))); __f->op2 = (4); __f->disp = ((((uint32_t)(jit->buf + addr))>>10)) & 0x3fffff; (((buf))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((buf))); __f->op = (2); __f->imm = (((uint32_t)(jit->buf + addr)&0x3ff)); __f->i = 1; __f->rd = (((op->r_arg[0]))); __f->rs1 = (((op->r_arg[0]))); __f->op3 = (((0))|2); (((buf))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0);
+   do { do { unsigned char _amd64_rex_bits = ((((sizeof(void *))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((op->r_arg[0])) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((sizeof(void *))) == 1))) *(buf)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(buf)++ = (unsigned char)0xb8 + ((op->r_arg[0]) & 0x7); if ((sizeof(void *)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(jit->buf + addr)); *((buf))++ = imb.b [0]; *((buf))++ = imb.b [1]; *((buf))++ = imb.b [2]; *((buf))++ = imb.b [3]; *((buf))++ = imb.b [4]; *((buf))++ = imb.b [5]; *((buf))++ = imb.b [6]; *((buf))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(jit->buf + addr)); *((buf))++ = imb.b [0]; *((buf))++ = imb.b [1]; *((buf))++ = imb.b [2]; *((buf))++ = imb.b [3]; } while (0); } while (0);
   }
   if ((((jit_opcode) (op->code & 0xfff8)) == JIT_DATA_REF_CODE) || (((jit_opcode) (op->code & 0xfff8)) == JIT_DATA_REF_DATA)) {
    unsigned char *buf = jit->buf + (long) op->patch_addr;
@@ -1470,605 +2363,191 @@ void jit_patch_local_addrs(struct jit *jit)
   }
  }
 }
-static inline int jit_internal__bit_pop(unsigned int x) {
- x = (x & 0x55555555) + ((x >> 1) & 0x55555555);
- x = (x & 0x33333333) + ((x >> 2) & 0x33333333);
- x = (x & 0x0F0F0F0F) + ((x >> 4) & 0x0F0F0F0F);
- x = (x & 0x00FF00FF) + ((x >> 8) & 0x00FF00FF);
- x = (x & 0x0000FFFF) + ((x >>16) & 0x0000FFFF);
- return x;
-}
-void jit_internal_emit_optimized_multiplication(struct jit * jit, long a1, long a2, long a3)
-{
- int bits = jit_internal__bit_pop(a3);
- unsigned long ar = (unsigned long)a3;
- int in_tmp = 0;
- for (int i = 0; i < 32; i++) {
-  if (ar & 0x1) {
-   bits--;
-   if (bits == 0) {
-    if (!in_tmp) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((i)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (37); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    else {
-     do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((i)); __f->i = 1; __f->rd = ((sparc_g2)); __f->rs1 = ((a2)); __f->op3 = (37); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((sparc_g1))); __f->rs2 = (((sparc_g2))); __f->op3 = (0|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    }
-   } else {
-    if (!in_tmp) {
-     do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((i)); __f->i = 1; __f->rd = ((sparc_g1)); __f->rs1 = ((a2)); __f->op3 = (37); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     in_tmp = 1;
-    } else {
-     do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((i)); __f->i = 1; __f->rd = ((sparc_g2)); __f->rs1 = ((a2)); __f->op3 = (37); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->rs2 = (((sparc_g2))); __f->op3 = (0|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    }
-   }
-  }
-  ar >>= 1;
-  if (bits == 0) break;
- }
-}
-void jit_internal_emit_mul(struct jit * jit, jit_op * op)
-{
- long a1 = op->r_arg[0];
- long a2 = op->r_arg[1];
- long a3 = op->r_arg[2];
- if ((op->code & 0x02)) {
-  if (a3 == 0) {
-   do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = ((sparc_g0)); __f->rs2 = (((sparc_g0))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   return;
-  }
-  if (a3 == 1) {
-   if (a1 != a2) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = ((sparc_g0)); __f->rs2 = (((a2))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   return;
-  }
-  if ((a3 > 0) && (jit_internal__bit_pop(a3) <= 5)) {
-   jit_internal_emit_optimized_multiplication(jit, a1, a2, a3);
-   return;
-  }
-  if ((a3 < 0) && (jit_internal__bit_pop(-a3) <= 5)) {
-   jit_internal_emit_optimized_multiplication(jit, a1, a2, -a3);
-   do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((a1)))); __f->rs1 = (((sparc_g0))); __f->rs2 = ((((a1)))); __f->op3 = (0x4|((((0))) ? 0x10 : 0)); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   return;
-  }
-  if ((!(op->code & 0x04))) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->op3 = (0xb|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  else do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->op3 = (0xa|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- } else {
-  if ((!(op->code & 0x04))) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0xb|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  else do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->op3 = (0xa|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- }
-}
-static void jit_internal_emit_sparc_round(struct jit * jit, long a1, long a2)
-{
- static double zero_point_5 = 0.5;
- do { if ((0) == 0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((sparc_g1)))); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((uint32_t)(0) & 0x3ff) == 0) do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)(0))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((int32_t)(0) >= -4096) && ((int32_t)(0) <= 4095)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((int32_t)(0))); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)(0))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)(0)&0x3ff)); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0); } while (0);
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fabss_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((a2)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fmovs_val)); __f->rd = ((sparc_f31)); __f->rs1 = ((0)); __f->rs2 = ((a2 + 1)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fcmpd_val)); __f->rd = (0); __f->rs1 = ((a2)); __f->rs2 = ((sparc_f30)); __f->op3 = (53); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { if (((long)&zero_point_5) == 0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((sparc_g1)))); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((uint32_t)((long)&zero_point_5) & 0x3ff) == 0) do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)((long)&zero_point_5))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((int32_t)((long)&zero_point_5) >= -4096) && ((int32_t)((long)&zero_point_5) <= 4095)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((int32_t)((long)&zero_point_5))); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)((long)&zero_point_5))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)((long)&zero_point_5)&0x3ff)); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0); } while (0);
- do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0); __f->i = 0; __f->rd = ((sparc_f30)); __f->rs1 = ((sparc_g1)); __f->rs2 = ((sparc_g0)); __f->op3 = (35); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- unsigned char * br1 = jit->ip;
- do { jit_internal_sparc_format2b *__f = (jit_internal_sparc_format2b*)((jit->ip)); __f->op = 0; __f->a = (((0))); __f->cond = ((sparc_fbge)); __f->op2 = (6); __f->disp = ((0)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fnegs_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((sparc_f30)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { long __p = ((long)(jit->ip)) >> 2; long __t = ((long)(br1)) >> 2; long __location = (__p - __t); jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(br1); if (__f->op == 0) { *(int *)(br1) &= ~(0x03fffff); *(int *)(br1) |= (0x03fffff & __location); } else { *(int *)(br1) &= ~(0x3fffffff); *(int *)(br1) |= (0x3fffffff & __location); } } while (0);;
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_faddd_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_f30)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fdtoi_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((sparc_f30)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((sparc_f30)); __f->rs1 = ((sparc_fp)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_fp)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-}
-static void jit_internal_emit_sparc_floor(struct jit * jit, long a1, long a2, int floor)
-{
- do { if ((0) == 0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((sparc_g1)))); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((uint32_t)(0) & 0x3ff) == 0) do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)(0))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((int32_t)(0) >= -4096) && ((int32_t)(0) <= 4095)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((int32_t)(0))); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)(0))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)(0)&0x3ff)); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0); } while (0);
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fabss_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((a2)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fmovs_val)); __f->rd = ((sparc_f31)); __f->rs1 = ((0)); __f->rs2 = ((a2 + 1)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fcmpd_val)); __f->rd = (0); __f->rs1 = ((a2)); __f->rs2 = ((sparc_f30)); __f->op3 = (53); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- unsigned char * br1 = jit->ip;
- do { jit_internal_sparc_format2b *__f = (jit_internal_sparc_format2b*)((jit->ip)); __f->op = 0; __f->a = (((0))); __f->cond = (((floor ? sparc_fbe : sparc_fbne))); __f->op2 = (6); __f->disp = ((0)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fdtoi_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((a2)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fitod_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((sparc_f30)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fcmpd_val)); __f->rd = (0); __f->rs1 = ((a2)); __f->rs2 = ((sparc_f30)); __f->op3 = (53); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- unsigned char * br2 = jit->ip;
- do { jit_internal_sparc_format2b *__f = (jit_internal_sparc_format2b*)((jit->ip)); __f->op = 0; __f->a = (((0))); __f->cond = ((sparc_fbe)); __f->op2 = (6); __f->disp = ((0)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { if (((floor ? -1 : 1)) == 0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((sparc_g1)))); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((uint32_t)((floor ? -1 : 1)) & 0x3ff) == 0) do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)((floor ? -1 : 1)))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((int32_t)((floor ? -1 : 1)) >= -4096) && ((int32_t)((floor ? -1 : 1)) <= 4095)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((int32_t)((floor ? -1 : 1)))); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)((floor ? -1 : 1)))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)((floor ? -1 : 1))&0x3ff)); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0); } while (0);
- do { long __p = ((long)(jit->ip)) >> 2; long __t = ((long)(br1)) >> 2; long __location = (__p - __t); jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(br1); if (__f->op == 0) { *(int *)(br1) &= ~(0x03fffff); *(int *)(br1) |= (0x03fffff & __location); } else { *(int *)(br1) &= ~(0x3fffffff); *(int *)(br1) |= (0x3fffffff & __location); } } while (0);;
- do { long __p = ((long)(jit->ip)) >> 2; long __t = ((long)(br2)) >> 2; long __location = (__p - __t); jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(br2); if (__f->op == 0) { *(int *)(br2) &= ~(0x03fffff); *(int *)(br2) |= (0x03fffff & __location); } else { *(int *)(br2) &= ~(0x3fffffff); *(int *)(br2) |= (0x3fffffff & __location); } } while (0);;
- do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fdtoi_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((a2)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((sparc_f30)); __f->rs1 = ((sparc_fp)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_fp)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a1))); __f->rs2 = (((sparc_g1))); __f->op3 = (0|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-}
-static inline void jit_internal_emit_ureg(struct jit * jit, long vreg, long hreg_id)
-{
- if (JIT_REG(vreg).spec == (3)) {
-  if (JIT_REG(vreg).type == (0)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((jit_internal_GET_REG_POS(jit, vreg))); __f->i = 1; __f->rd = ((hreg_id)); __f->rs1 = ((sparc_fp)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  else {
-   int arg_id = JIT_REG(vreg).id;
-   struct jit_inp_arg * a = &(jit_current_func_info(jit)->args[arg_id]);
-   if (a->passed_by_reg) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a->spill_pos)); __f->i = 1; __f->rd = ((hreg_id)); __f->rs1 = ((sparc_fp)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  }
- }
- if (JIT_REG(vreg).spec == (0)) {
-  if (JIT_REG(vreg).type != (1))
-   do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((jit_internal_GET_REG_POS(jit, vreg))); __f->i = 1; __f->rd = ((hreg_id)); __f->rs1 = ((sparc_fp)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-  else do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((jit_internal_GET_REG_POS(jit, vreg))); __f->i = 1; __f->rd = ((hreg_id)); __f->rs1 = ((sparc_fp)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
- }
-}
 void jit_gen_op(struct jit * jit, struct jit_op * op)
 {
- long a1 = op->r_arg[0];
- long a2 = op->r_arg[1];
- long a3 = op->r_arg[2];
+ jit_value a1 = op->r_arg[0];
+ jit_value a2 = op->r_arg[1];
+ jit_value a3 = op->r_arg[2];
+ int imm = (op->code & 0x02);
+ int sign = (!(op->code & 0x04));
  int found = 1;
  switch (((jit_opcode) (op->code & 0xfff8))) {
-  case JIT_ADD: if ((op->code & 0x02)) { if (a3 != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->op3 = (0|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((sparc_g0))); __f->op3 = (0|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;;
-  case JIT_ADDC: if ((op->code & 0x02)) { if (a3 != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->op3 = (0|(((16)) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((sparc_g0))); __f->op3 = (0|(((16)) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0|(((16)) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;;
-  case JIT_ADDX: if ((op->code & 0x02)) { if (a3 != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->op3 = (0x8|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((sparc_g0))); __f->op3 = (0x8|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0x8|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;;
-  case JIT_SUB: if ((op->code & 0x02)) { if (a3 != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->op3 = (0x4|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((sparc_g0))); __f->op3 = (0x4|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0x4|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;;
-  case JIT_SUBC: if ((op->code & 0x02)) { if (a3 != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->op3 = (0x4|(((16)) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((sparc_g0))); __f->op3 = (0x4|(((16)) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0x4|(((16)) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;;
-  case JIT_SUBX: if ((op->code & 0x02)) { if (a3 != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->op3 = (0xc|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((sparc_g0))); __f->op3 = (0xc|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0xc|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;;
-  case JIT_RSB:
-   if ((op->code & 0x02)) {
-    do { if ((a3) == 0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((sparc_g1)))); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((uint32_t)(a3) & 0x3ff) == 0) do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)(a3))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((int32_t)(a3) >= -4096) && ((int32_t)(a3) <= 4095)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((int32_t)(a3))); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)(a3))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)(a3)&0x3ff)); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0); } while (0);
-    do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((sparc_g1))); __f->rs2 = (((a2))); __f->op3 = (0x4|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a3))); __f->rs2 = (((a2))); __f->op3 = (0x4|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
+  case JIT_ADD:
+   if ((a1 != a2) && (a1 != a3)) {
+    if (imm) do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x8d; do { if (((a2)) == AMD64_RIP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((((a1))&0x7)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } else do { if ((((a2))&0x7) == X86_ESP) { if ((((a3))) == 0) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)((((a3)))) >= -128 && (int)((((a3)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((a3)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } break; } if ((((a3))) == 0 && (((a2))&0x7) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); break; } if ((((int)((((a3)))) >= -128 && (int)((((a3)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((a3)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((((a1))&0x7))&0x07)<<3)|((((((a2))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+    else do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a3)) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0x8d; do { if ((((a2))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && (((a2))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0);
+   } else jit_internal_emit_alu_op(jit, op, X86_ADD, imm);
    break;
-  case JIT_NEG: if (a1 != a2) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = ((sparc_g0)); __f->rs2 = (((a2))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-         do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((a1)))); __f->rs1 = (((sparc_g0))); __f->rs2 = ((((a1)))); __f->op3 = (0x4|((((0))) ? 0x10 : 0)); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-         break;
-  case JIT_NOT: if (a1 != a2) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = ((sparc_g0)); __f->rs2 = (((a2))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-         do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a1))); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|7); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-         break;
-  case JIT_OR: if ((op->code & 0x02)) { if (a3 != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (((0))|2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (((0))|2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;;
-  case JIT_AND: if ((op->code & 0x02)) { if (a3 != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = ((((0)) ? 0x10 : 0) | (1)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_g0)); __f->op3 = ((((0)) ? 0x10 : 0) | (1)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = ((((0)) ? 0x10 : 0) | (1)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;;
-  case JIT_XOR: if ((op->code & 0x02)) { if (a3 != 0) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (((0))|3); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|3); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (((0))|3); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;;
-  case JIT_LSH: if ((op->code & 0x02)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (37); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (37); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   break;
-  case JIT_RSH:
-   if ((!(op->code & 0x04))) {
-    if ((op->code & 0x02)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   } else {
-    if ((op->code & 0x02)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (38); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (38); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   break;
-  case JIT_MUL: jit_internal_emit_mul(jit, op); break;
-  case JIT_HMUL:
-   if ((!(op->code & 0x04))) {
-    if ((op->code & 0x02)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((sparc_g0))); __f->rs1 = (((a2))); __f->op3 = (0xb|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_g0))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0xb|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   } else {
-    if ((op->code & 0x02)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((sparc_g0))); __f->rs1 = (((a2))); __f->op3 = (0xa|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_g0))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0xa|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = (0); __f->rs2 = (0); __f->op3 = (40); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   break;
-  case JIT_DIV:
-   if ((!(op->code & 0x04))) {
-    if ((op->code & 0x02)) {
-     switch (a3) {
-      case 2: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((1)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-      case 4: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((2)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-      case 8: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-      case 16: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((4)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-      case 32: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((5)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-     }
-    }
-    do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((31)); __f->i = 1; __f->rd = ((sparc_g1)); __f->rs1 = ((a2)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (0); __f->rs1 = ((sparc_g1)); __f->rs2 = ((sparc_g0)); __f->op3 = (48); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    if ((op->code & 0x02)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->op3 = (0xf|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0xf|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   } else {
-    if ((op->code & 0x02)) {
-     switch (a3) {
-      case 2: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((1)); __f->op3 = (38); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-      case 4: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((2)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (38); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-      case 8: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (38); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-      case 16: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((4)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (38); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-      case 32: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((5)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (38); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-     }
-    }
-    do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (0); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (48); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    if ((op->code & 0x02)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->op3 = (0xe|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    else do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0xe|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   break;
-  case JIT_MOD:
-   if ((op->code & 0x02)) {
-    switch (a3) {
-     case 2: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((0x01)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = ((((0)) ? 0x10 : 0) | (1)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-     case 4: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((0x03)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = ((((0)) ? 0x10 : 0) | (1)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-     case 8: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((0x07)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = ((((0)) ? 0x10 : 0) | (1)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-     case 16: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((0x0f)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = ((((0)) ? 0x10 : 0) | (1)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-     case 32: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((0x1f)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = ((((0)) ? 0x10 : 0) | (1)); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); goto op_complete;
-    }
-   }
-   if ((!(op->code & 0x04))) {
-    do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((31)); __f->i = 1; __f->rd = ((sparc_g1)); __f->rs1 = ((a2)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (0); __f->rs1 = ((sparc_g1)); __f->rs2 = ((sparc_g0)); __f->op3 = (48); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   } else {
-    do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (0); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (48); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   if ((!(op->code & 0x04))) {
-    if ((op->code & 0x02)) {
-     do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = (((a2))); __f->op3 = (0xf|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->op3 = (0xb|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    } else {
-     do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_g1))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0xf|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->rs2 = (((a3))); __f->op3 = (0xb|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    }
-   } else {
-    if ((op->code & 0x02)) {
-     do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = (((a2))); __f->op3 = (0xe|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((a3))); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->op3 = (0xa|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    } else {
-     do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_g1))); __f->rs1 = (((a2))); __f->rs2 = (((a3))); __f->op3 = (0xe|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->rs2 = (((a3))); __f->op3 = (0xa|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    }
-   }
-   do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = (((a2))); __f->rs2 = (((sparc_g1))); __f->op3 = (0x4|((((0))) ? 0x10 : 0)); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   break;
-  case JIT_LT: jit_internal_emit_cond_op_op(jit, op, (!(op->code & 0x04)) ? sparc_bl : sparc_blu, (op->code & 0x02)); break;
-  case JIT_LE: jit_internal_emit_cond_op_op(jit, op, (!(op->code & 0x04)) ? sparc_ble : sparc_bleu, (op->code & 0x02)); break;
-  case JIT_GT: jit_internal_emit_cond_op_op(jit, op, (!(op->code & 0x04)) ? sparc_bg : sparc_bgu, (op->code & 0x02)); break;
-  case JIT_GE: jit_internal_emit_cond_op_op(jit, op, (!(op->code & 0x04)) ? sparc_bge : sparc_bgeu, (op->code & 0x02)); break;
-  case JIT_EQ: jit_internal_emit_cond_op_op(jit, op, sparc_be, (op->code & 0x02)); break;
-  case JIT_NE: jit_internal_emit_cond_op_op(jit, op, sparc_bne, (op->code & 0x02)); break;
-  case JIT_BLT: jit_internal_emit_branch_op(jit, op, (!(op->code & 0x04)) ? sparc_bl : sparc_blu, (op->code & 0x02)); break;
-  case JIT_BGT: jit_internal_emit_branch_op(jit, op, (!(op->code & 0x04)) ? sparc_bg : sparc_bgu, (op->code & 0x02)); break;
-  case JIT_BLE: jit_internal_emit_branch_op(jit, op, (!(op->code & 0x04)) ? sparc_ble : sparc_bleu, (op->code & 0x02)); break;
-  case JIT_BGE: jit_internal_emit_branch_op(jit, op, (!(op->code & 0x04)) ? sparc_bge : sparc_bgeu, (op->code & 0x02)); break;
-  case JIT_BEQ: jit_internal_emit_branch_op(jit, op, sparc_be, (op->code & 0x02)); break;
-  case JIT_BNE: jit_internal_emit_branch_op(jit, op, sparc_bne, (op->code & 0x02)); break;
-  case JIT_BMS: jit_internal_emit_branch_mask_op(jit, op, sparc_bne, (op->code & 0x02)); break;
-  case JIT_BMC: jit_internal_emit_branch_mask_op(jit, op, sparc_be, (op->code & 0x02)); break;
-  case JIT_BOADD: jit_internal_emit_op_and_overflow_branch(jit, op, JIT_ADD, (op->code & 0x02), 0); break;
-  case JIT_BOSUB: jit_internal_emit_op_and_overflow_branch(jit, op, JIT_SUB, (op->code & 0x02), 0); break;
-  case JIT_BNOADD: jit_internal_emit_op_and_overflow_branch(jit, op, JIT_ADD, (op->code & 0x02), 1); break;
-  case JIT_BNOSUB: jit_internal_emit_op_and_overflow_branch(jit, op, JIT_SUB, (op->code & 0x02), 1); break;
-  case JIT_CALL: jit_internal_emit_funcall(jit, op, (op->code & 0x02)); break;
+  case JIT_ADDC: jit_internal_emit_alu_op(jit, op, X86_ADD, imm); break;
+  case JIT_ADDX: jit_internal_emit_alu_op(jit, op, X86_ADC, imm); break;
+  case JIT_SUB: jit_internal_emit_sub_op(jit, op, imm); break;
+  case JIT_SUBC: jit_internal_emit_subx_op(jit, op, X86_SUB, imm); break;
+  case JIT_SUBX: jit_internal_emit_subx_op(jit, op, X86_SBB, imm); break;
+  case JIT_RSB: jit_internal_emit_rsb_op(jit, op, imm); break;
+  case JIT_NEG:
+    if (a1 != a2) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((((a2)))&0x07))); } while (0); } while (0); } while (0);
+    do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((3))&0x07)<<3)|(((((((a1)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+    break;
+  case JIT_OR: jit_internal_emit_alu_op(jit, op, X86_OR, imm); break;
+  case JIT_XOR: jit_internal_emit_alu_op(jit, op, X86_XOR, imm); break;
+  case JIT_AND: jit_internal_emit_alu_op(jit, op, X86_AND, imm); break;
+  case JIT_NOT: if (a1 != a2) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((((a2)))&0x07))); } while (0); } while (0); } while (0);
+          do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xf7; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((2))&0x07)<<3)|(((((((a1)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+          break;
+  case JIT_LSH: jit_internal_emit_shift_op(jit, op, X86_SHL, imm); break;
+  case JIT_RSH: jit_internal_emit_shift_op(jit, op, sign ? X86_SAR : X86_SHR, imm); break;
+  case JIT_LT: jit_internal_emit_cond_op(jit, op, jit_internal_X86_CC_LT, imm, sign); break;
+  case JIT_LE: jit_internal_emit_cond_op(jit, op, jit_internal_X86_CC_LE, imm, sign); break;
+  case JIT_GT: jit_internal_emit_cond_op(jit, op, jit_internal_X86_CC_GT, imm, sign); break;
+  case JIT_GE: jit_internal_emit_cond_op(jit, op, jit_internal_X86_CC_GE, imm, sign); break;
+  case JIT_EQ: jit_internal_emit_cond_op(jit, op, jit_internal_X86_CC_EQ, imm, sign); break;
+  case JIT_NE: jit_internal_emit_cond_op(jit, op, jit_internal_X86_CC_NE, imm, sign); break;
+  case JIT_BLT: jit_internal_emit_branch_op(jit, op, jit_internal_X86_CC_LT, imm, sign); break;
+  case JIT_BLE: jit_internal_emit_branch_op(jit, op, jit_internal_X86_CC_LE, imm, sign); break;
+  case JIT_BGT: jit_internal_emit_branch_op(jit, op, jit_internal_X86_CC_GT, imm, sign); break;
+  case JIT_BGE: jit_internal_emit_branch_op(jit, op, jit_internal_X86_CC_GE, imm, sign); break;
+  case JIT_BEQ: jit_internal_emit_branch_op(jit, op, jit_internal_X86_CC_EQ, imm, sign); break;
+  case JIT_BNE: jit_internal_emit_branch_op(jit, op, jit_internal_X86_CC_NE, imm, sign); break;
+  case JIT_BMS: jit_internal_emit_branch_mask_op(jit, op, jit_internal_X86_CC_NZ, imm); break;
+  case JIT_BMC: jit_internal_emit_branch_mask_op(jit, op, jit_internal_X86_CC_Z, imm); break;
+  case JIT_BOADD: jit_internal_emit_branch_overflow_op(jit, op, X86_ADD, imm, 0); break;
+  case JIT_BOSUB: jit_internal_emit_branch_overflow_op(jit, op, X86_SUB, imm, 0); break;
+  case JIT_BNOADD: jit_internal_emit_branch_overflow_op(jit, op, X86_ADD, imm, 1); break;
+  case JIT_BNOSUB: jit_internal_emit_branch_overflow_op(jit, op, X86_SUB, imm, 1); break;
+  case JIT_MUL: jit_internal_emit_mul_op(jit, op, imm, sign, 0); break;
+  case JIT_HMUL: jit_internal_emit_mul_op(jit, op, imm, sign, 1); break;
+  case JIT_DIV: jit_internal_emit_div_op(jit, op, imm, sign, 0); break;
+  case JIT_MOD: jit_internal_emit_div_op(jit, op, imm, sign, 1); break;
+  case JIT_CALL: jit_internal_emit_funcall(jit, op, imm); break;
   case JIT_PATCH: do {
-    struct jit_op *target = (struct jit_op *) a1;
-    switch (((jit_opcode) (target->code & 0xfff8))) {
-     case JIT_REF_CODE:
-     case JIT_REF_DATA:
-      target->arg[1] = ((jit_value)jit->ip - (jit_value)jit->buf);
-      break;
-     case JIT_DATA_REF_CODE:
-     case JIT_DATA_REF_DATA:
-      target->arg[0] = ((jit_value)jit->ip - (jit_value)jit->buf);
-      break;
-     default: {
-      long pa = ((struct jit_op *)a1)->patch_addr;
-      do { long __p = ((long)(jit->ip)) >> 2; long __t = ((long)(jit->buf + pa)) >> 2; long __location = (__p - __t); jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(jit->buf + pa); if (__f->op == 0) { *(int *)(jit->buf + pa) &= ~(0x03fffff); *(int *)(jit->buf + pa) |= (0x03fffff & __location); } else { *(int *)(jit->buf + pa) &= ~(0x3fffffff); *(int *)(jit->buf + pa) |= (0x3fffffff & __location); } } while (0);;
+     struct jit_op *target = (struct jit_op *) a1;
+     if (!target->in_use) break;
+     switch (((jit_opcode) (target->code & 0xfff8))) {
+      case JIT_REF_CODE:
+      case JIT_REF_DATA:
+       target->arg[1] = ((jit_value)jit->ip - (jit_value)jit->buf);
+       break;
+      case JIT_DATA_REF_CODE:
+      case JIT_DATA_REF_DATA:
+       target->arg[0] = ((jit_value)jit->ip - (jit_value)jit->buf);
+       break;
+      default: {
+       jit_value pa = target->patch_addr;
+       do { unsigned char rex_correction = 0; if ((*((unsigned char*)(jit->buf + pa)) & 0xf0) == 0x40) rex_correction++; unsigned char* pos = (jit->buf + pa) + 1 + rex_correction; int disp, size = 0; switch (*((unsigned char*)(jit->buf + pa) + rex_correction)) { case 0xe8: case 0xe9: ++size; break; case 0x0f: if (!(*pos >= 0x70 && *pos <= 0x8f)) assert (0); ++size; ++pos; break; case 0xe0: case 0xe1: case 0xe2: case 0xeb: case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: case 0x77: case 0x78: case 0x79: case 0x7a: case 0x7b: case 0x7c: case 0x7d: case 0x7e: case 0x7f: break; default: assert (0); } disp = (jit->ip) - pos; if (size) do { jit_internal_x86_imm_buf imb; imb.val = (int) (disp - 4); *(pos)++ = imb.b [0]; *(pos)++ = imb.b [1]; *(pos)++ = imb.b [2]; *(pos)++ = imb.b [3]; } while (0); else if ((((int)(disp - 1) >= -128 && (int)(disp - 1) <= 127))) do { *(pos) = (unsigned char)((disp - 1) & 0xff); ++(pos); } while (0); else assert (0); } while (0);
+      }
      }
-    }
-   } while (0);
-   break;
+    } while (0);
+    break;
   case JIT_JMP:
    op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
-   if (op->code & 0x01) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((sparc_g0)); __f->rs1 = (((a1))); __f->rs2 = (((sparc_g0))); __f->op3 = (56); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   else do { jit_internal_sparc_format2b *__f = (jit_internal_sparc_format2b*)((jit->ip)); __f->op = 0; __f->a = (((0))); __f->cond = ((sparc_balways)); __f->op2 = (2); __f->disp = (((!jit_is_label(jit, (void *)(op->r_arg[0])) ? (op->r_arg[0]) : ((((long)jit->buf + (long)((jit_label *)(op->r_arg[0]))->pos - (long)jit->ip)) / 4)))); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
+   if (op->code & 0x01) do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0xff; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((4))&0x07)<<3)|(((((((a1)&0x7))))&0x07))); } while (0); } while (0); } while (0); } while (0);
+   else do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { int t = (((!jit_is_label(jit, (void *)(a1)) ? (a1) : (((jit_value)jit->buf + ((jit_label *)(a1))->pos - (jit_value)jit->ip))))) - 5; do { *(((jit->ip)))++ = (unsigned char)0xe9; do { jit_internal_x86_imm_buf imb; imb.val = (int) ((t)); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } while (0); } while (0); } while (0);
    break;
   case JIT_RET:
-   if (!(op->code & 0x02) && (a1 != sparc_i0)) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_i0))); __f->rs1 = ((sparc_g0)); __f->rs2 = (((a1))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   if ((op->code & 0x02)) do { if ((a1) == 0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((sparc_i0)))); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((uint32_t)(a1) & 0x3ff) == 0) do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_i0))); __f->op2 = (4); __f->disp = ((((uint32_t)(a1))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((int32_t)(a1) >= -4096) && ((int32_t)(a1) <= 4095)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((int32_t)(a1))); __f->i = 1; __f->rd = (((sparc_i0))); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_i0))); __f->op2 = (4); __f->disp = ((((uint32_t)(a1))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)(a1)&0x3ff)); __f->i = 1; __f->rd = (((sparc_i0))); __f->rs1 = (((sparc_i0))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0); } while (0);
-   do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = ((8)); __f->i = 1; __f->rd = ((sparc_g0)); __f->rs1 = ((sparc_i7)); __f->op3 = (56); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((0)); __f->i = 1; __f->rd = ((sparc_g0)); __f->rs1 = ((sparc_g0)); __f->op3 = (61); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
+   if (!imm && (a1 != AMD64_RAX)) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RAX)))&0x07)<<3)|(((((a1)))&0x07))); } while (0); } while (0); } while (0);
+   if (imm) do { do { unsigned char _amd64_rex_bits = ((((sizeof(void *))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RAX)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((sizeof(void *))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((AMD64_RAX) & 0x7); if ((sizeof(void *)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(a1)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(a1)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
+   jit_internal_emit_pop_callee_saved_regs(jit);
+   if (jit_current_func_info(jit)->has_prolog) {
+    do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((AMD64_RSP)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((AMD64_RSP)))&0x07)<<3)|(((((AMD64_RBP)))&0x07))); } while (0); } while (0); } while (0);
+    do { do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((AMD64_RBP)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0x58 + ((AMD64_RBP) & 0x7); } while (0);
+   }
+   do { *(jit->ip)++ = (unsigned char)0xc3; } while (0);
    break;
   case JIT_PUTARG: jit_internal_funcall_put_arg(jit, op); break;
   case JIT_FPUTARG: jit_internal_funcall_fput_arg(jit, op); break;
   case JIT_GETARG: jit_internal_emit_get_arg(jit, op); break;
-  case JIT_MSG:
-     do { if ((a1) == 0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((sparc_o0)))); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((uint32_t)(a1) & 0x3ff) == 0) do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_o0))); __f->op2 = (4); __f->disp = ((((uint32_t)(a1))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((int32_t)(a1) >= -4096) && ((int32_t)(a1) <= 4095)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((int32_t)(a1))); __f->i = 1; __f->rd = (((sparc_o0))); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_o0))); __f->op2 = (4); __f->disp = ((((uint32_t)(a1))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)(a1)&0x3ff)); __f->i = 1; __f->rd = (((sparc_o0))); __f->rs1 = (((sparc_o0))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } } while (0);
-     if (!(op->code & 0x02)) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((sparc_o1))); __f->rs1 = ((sparc_g0)); __f->rs2 = (((a2))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
-     do { jit_internal_sparc_format1 *__f = (jit_internal_sparc_format1*)((jit->ip)); __f->op = 1; __f->disp = ((unsigned int)(((unsigned int)(printf))) >> 2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-     break;
-  case JIT_TRACE:
+  case JIT_MSG: jit_internal_emit_msg_op(jit, op); break;
+  case JIT_TRACE: jit_internal_emit_trace_op(jit, op);
+    while (((unsigned long) jit->ip) % 16)
+     do { do { *(jit->ip)++ = (unsigned char)0x90; } while (0); } while (0);
     break;
+  case JIT_LD: jit_internal_emit_ld_op(jit, op, a1, a2); break;
+  case JIT_LDX: jit_internal_emit_ldx_op(jit, op, a1, a2, a3); break;
+  case JIT_FST: jit_internal_emit_sse_fst_op(jit, op, a1, a2); break;
+  case JIT_FSTX: jit_internal_emit_sse_fstx_op(jit, op, a1, a2, a3); break;
+  case JIT_FLD: jit_internal_emit_sse_fld_op(jit, op, a1, a2); break;
+  case JIT_FLDX: jit_internal_emit_sse_fldx_op(jit, op, a1, a2, a3); break;
+  case JIT_MEMCPY: jit_internal_emit_memcpy(jit, op, a1, a2, a3); break;
+  case JIT_MEMSET: jit_internal_emit_memset(jit, op, a1, a2, a3, op->arg_size); break;
+  case JIT_TRANSFER: jit_internal_emit_transfer_init(jit, op, a1, a2, a3, op->arg_size); break;
+  case JIT_TRANSFER_CPY: jit_internal_emit_transfer_loop(jit, (jit_op *)a1); break;
+  case JIT_TRANSFER_XOR: jit_internal_emit_transfer_op(jit, op, X86_XOR); break;
+  case JIT_TRANSFER_AND: jit_internal_emit_transfer_op(jit, op, X86_AND); break;
+  case JIT_TRANSFER_OR: jit_internal_emit_transfer_op(jit, op, X86_OR); break;
+  case JIT_TRANSFER_ADD: jit_internal_emit_transfer_op(jit, op, X86_ADD); break;
+  case JIT_TRANSFER_SUB: jit_internal_emit_transfer_op(jit, op, X86_SUB); break;
   case JIT_ALLOCA: break;
-  case JIT_CODE_ALIGN: {
-    int count = op->arg[0];
-    assert(!(count % 4));
-    while ((unsigned long)jit->ip % count) {
-     if ((unsigned long)jit->ip % 4) {
-      *jit->ip = 0;
-      jit->ip++;
-     }
-            else do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = ((sparc_zero)); __f->op2 = (4); __f->disp = (((0)>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    }
-   }
-   break;
+  case JIT_DECL_ARG: break;
+  case JIT_RETVAL: break;
+  case JIT_LABEL: ((jit_label *)a1)->pos = ((jit_value)jit->ip - (jit_value)jit->buf); break;
+  case JIT_CODE_ALIGN:
+    while (((unsigned long) jit->ip) % op->arg[0])
+     do { do { *(jit->ip)++ = (unsigned char)0x90; } while (0); } while (0);
+    break;
   case JIT_REF_CODE:
   case JIT_REF_DATA:
    op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
-   do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((a1))); __f->op2 = (4); __f->disp = ((((uint32_t)(0xdeadbeef))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)(0xdeadbeef)&0x3ff)); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a1))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0);
+   do { do { unsigned char _amd64_rex_bits = ((((sizeof(void *))) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((sizeof(void *))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((a1) & 0x7); if ((sizeof(void *)) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(0xdeadbeefcafebabe)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(0xdeadbeefcafebabe)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
    break;
   case JIT_DATA_BYTE: break;
   case JIT_FULL_SPILL: break;
   default: found = 0;
  }
-op_complete:
  if (found) return;
  switch (op->code) {
-  case (JIT_MOV | 0x01): if (a1 != a2) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = ((sparc_g0)); __f->rs2 = (((a2))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-  case (JIT_MOV | 0x02): do { if ((a2) == 0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((a1)))); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((uint32_t)(a2) & 0x3ff) == 0) do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((a1))); __f->op2 = (4); __f->disp = ((((uint32_t)(a2))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((int32_t)(a2) >= -4096) && ((int32_t)(a2) <= 4095)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((int32_t)(a2))); __f->i = 1; __f->rd = (((a1))); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((a1))); __f->op2 = (4); __f->disp = ((((uint32_t)(a2))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)(a2)&0x3ff)); __f->i = 1; __f->rd = (((a1))); __f->rs1 = (((a1))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0); } while (0); break;
-  case JIT_PREPARE: jit_internal_funcall_prepare(jit, op, a1 + a2); break;
-  case JIT_PROLOG:
-   do {
-    jit->current_func = op;
-    struct jit_func_info * info = jit_current_func_info(jit);
-    int stack_mem = 96;
-    op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
-    stack_mem += info->allocai_mem;
-    stack_mem += info->gp_reg_count * (sizeof(void *));
-    stack_mem += info->fp_reg_count * sizeof(double);
-    stack_mem += info->float_arg_cnt * sizeof(double);
-    stack_mem += jit_internal_space_for_outgoing_args(jit, op);
-    stack_mem = jit_value_align(stack_mem, 16);
-    do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((-stack_mem)); __f->i = 1; __f->rd = ((sparc_sp)); __f->rs1 = ((sparc_sp)); __f->op3 = (60); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   } while (0);
+  case (JIT_MOV | 0x01): if (a1 != a2) do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((((a2)))&0x07))); } while (0); } while (0); } while (0); break;
+  case (JIT_MOV | 0x02):
+   if (a2 == 0) do { do { unsigned char _amd64_rex_bits = (((8) > 4) ? AMD64_REX_W : 0) | (((((a1))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((((a1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((8) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *((jit->ip))++ = (((unsigned char)((X86_XOR))) << 3) + 3; do { do { *((((jit->ip))))++ = ((((3)&0x03)<<6)|((((((a1))))&0x07)<<3)|((((((a1))))&0x07))); } while (0); } while (0); } while (0);
+   else do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(jit->ip)++ = (unsigned char)0xb8 + ((a1) & 0x7); if ((8) == 8) do { jit_internal_amd64_imm_buf imb; imb.val = (size_t) ((size_t)(a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; *((jit->ip))++ = imb.b [4]; *((jit->ip))++ = imb.b [5]; *((jit->ip))++ = imb.b [6]; *((jit->ip))++ = imb.b [7]; } while (0); else do { jit_internal_x86_imm_buf imb; imb.val = (int) ((int)(size_t)(a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0);
    break;
-  case JIT_RETVAL:
-      if (a1 != sparc_o0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = ((sparc_g0)); __f->rs2 = (((sparc_o0))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
+  case JIT_PREPARE: jit_internal_funcall_prepare(jit, op, a1 + a2);
+      jit->push_count += jit_internal_emit_push_caller_saved_regs(jit, op);
       break;
-  case JIT_DECL_ARG: break;
-  case JIT_LABEL: ((jit_label *)a1)->pos = ((jit_value)jit->ip - (jit_value)jit->buf); break;
-  case (JIT_LD | 0x01 | 0x00):
-    switch (op->arg_size) {
-     case 1: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_g0)); __f->op3 = (9); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 2: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_g0)); __f->op3 = (10); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 4: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_g0)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     default: abort();
-    } break;
-  case (JIT_LD | 0x01 | 0x04):
-    switch (op->arg_size) {
-     case 1: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_g0)); __f->op3 = (1); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 2: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_g0)); __f->op3 = (2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 4: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_g0)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     default: abort();
-    } break;
-  case (JIT_LD | 0x02 | 0x00):
-    switch (op->arg_size) {
-     case 1: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a2)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_g0)); __f->op3 = (9); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 2: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a2)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_g0)); __f->op3 = (10); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 4: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a2)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_g0)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     default: abort();
-    } break;
-  case (JIT_LD | 0x02 | 0x04):
-    switch (op->arg_size) {
-     case 1: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a2)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_g0)); __f->op3 = (1); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 2: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a2)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_g0)); __f->op3 = (2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 4: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a2)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_g0)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     default: abort();
-    } break;
-  case (JIT_LDX | 0x02 | 0x00):
-    switch (op->arg_size) {
-     case 1: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (9); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 2: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (10); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 4: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     default: abort();
-    } break;
-  case (JIT_LDX | 0x02 | 0x04):
-    switch (op->arg_size) {
-     case 1: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (1); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 2: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 4: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     default: abort();
-    } break;
-  case (JIT_LDX | 0x01 | 0x00):
-    switch (op->arg_size) {
-     case 1: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (9); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 2: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (10); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 4: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     default: abort();
-    } break;
-  case (JIT_LDX | 0x01 | 0x04):
-    switch (op->arg_size) {
-     case 1: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (1); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 2: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (2); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 4: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     default: abort();
-    } break;
-  case (JIT_ST | 0x01):
-    switch (op->arg_size) {
-     case 1: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a2)); __f->rs1 = ((sparc_g0)); __f->rs2 = ((a1)); __f->op3 = (5); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 2: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a2)); __f->rs1 = ((sparc_g0)); __f->rs2 = ((a1)); __f->op3 = (6); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 4: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a2)); __f->rs1 = ((sparc_g0)); __f->rs2 = ((a1)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     default: abort();
-    } break;
-  case (JIT_ST | 0x02):
-    switch (op->arg_size) {
-     case 1: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a1)); __f->i = 1; __f->rd = ((sparc_g0)); __f->rs1 = ((a2)); __f->op3 = (5); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 2: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a1)); __f->i = 1; __f->rd = ((sparc_g0)); __f->rs1 = ((a2)); __f->op3 = (6); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     case 4: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a1)); __f->i = 1; __f->rd = ((sparc_g0)); __f->rs1 = ((a2)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-     default: abort();
-    } break;
-  case (JIT_STX | 0x01):
-   switch (op->arg_size) {
-    case 1: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a3)); __f->rs1 = ((a2)); __f->rs2 = ((a1)); __f->op3 = (5); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-    case 2: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a3)); __f->rs1 = ((a2)); __f->rs2 = ((a1)); __f->op3 = (6); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-    case 4: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a3)); __f->rs1 = ((a2)); __f->rs2 = ((a1)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-    default: abort();
-   } break;
-  case (JIT_STX | 0x02):
-   switch (op->arg_size) {
-    case 1: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a1)); __f->i = 1; __f->rd = ((a3)); __f->rs1 = ((a2)); __f->op3 = (5); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-    case 2: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a1)); __f->i = 1; __f->rd = ((a3)); __f->rs1 = ((a2)); __f->op3 = (6); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-    case 4: do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a1)); __f->i = 1; __f->rd = ((a3)); __f->rs1 = ((a2)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-    default: abort();
-   } break;
-  case (JIT_FMOV | 0x01):
-   do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fmovs_val)); __f->rd = ((a1)); __f->rs1 = ((0)); __f->rs2 = ((a2)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fmovs_val)); __f->rd = ((a1 + 1)); __f->rs1 = ((0)); __f->rs2 = ((a2 + 1)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   break;
-  case (JIT_FMOV | 0x02):
-   do { if (((long)&op->flt_imm) == 0) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((((jit->ip)))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = ((((sparc_g1)))); __f->rs1 = ((sparc_g0)); __f->rs2 = ((sparc_g0)); __f->op3 = (((0))|2); ((((jit->ip)))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((uint32_t)((long)&op->flt_imm) & 0x3ff) == 0) do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)((long)&op->flt_imm))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else if (((int32_t)((long)&op->flt_imm) >= -4096) && ((int32_t)((long)&op->flt_imm) <= 4095)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((int32_t)((long)&op->flt_imm))); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = ((sparc_g0)); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); else do { do { jit_internal_sparc_format2a *__f = (jit_internal_sparc_format2a*)(((jit->ip))); __f->op = 0; __f->rd = (((sparc_g1))); __f->op2 = (4); __f->disp = ((((uint32_t)((long)&op->flt_imm))>>10)) & 0x3fffff; (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = (((uint32_t)((long)&op->flt_imm)&0x3ff)); __f->i = 1; __f->rd = (((sparc_g1))); __f->rs1 = (((sparc_g1))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); } while (0); } while (0);
-   do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((sparc_g1)); __f->rs2 = ((sparc_g0)); __f->op3 = (35); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   break;
-  case (JIT_FADD | 0x01): do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_faddd_val)); __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-  case (JIT_FSUB | 0x01): do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fsubd_val)); __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-  case (JIT_FRSB | 0x01): do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fsubd_val)); __f->rd = ((a1)); __f->rs1 = ((a3)); __f->rs2 = ((a2)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-  case (JIT_FMUL | 0x01): do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fmuld_val)); __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-  case (JIT_FDIV | 0x01): do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fdivd_val)); __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-  case (JIT_FNEG | 0x01): do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fnegs_val)); __f->rd = ((a1)); __f->rs1 = ((0)); __f->rs2 = ((a2)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
-  case (JIT_FBLT | 0x01): jit_internal_emit_fpbranch_op(jit, op, sparc_fbl, a2, a3); break;
-  case (JIT_FBGT | 0x01): jit_internal_emit_fpbranch_op(jit, op, sparc_fbg, a2, a3); break;
-  case (JIT_FBLE | 0x01): jit_internal_emit_fpbranch_op(jit, op, sparc_fble, a2, a3); break;
-  case (JIT_FBGE | 0x01): jit_internal_emit_fpbranch_op(jit, op, sparc_fbge, a2, a3); break;
-  case (JIT_FBEQ | 0x01): jit_internal_emit_fpbranch_op(jit, op, sparc_fbe, a2, a3); break;
-  case (JIT_FBNE | 0x01): jit_internal_emit_fpbranch_op(jit, op, sparc_fbne, a2, a3); break;
-  case (JIT_TRUNC | 0x01):
-   do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fdtoi_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((a2)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((sparc_f30)); __f->rs1 = ((sparc_fp)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_fp)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   break;
-  case (JIT_EXT | 0x01):
-   do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((a2)); __f->rs1 = ((sparc_fp)); __f->op3 = (4); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((-8)); __f->i = 1; __f->rd = ((sparc_f30)); __f->rs1 = ((sparc_fp)); __f->op3 = (32); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fitod_val)); __f->rd = ((a1)); __f->rs1 = ((0)); __f->rs2 = ((sparc_f30)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   break;
-  case (JIT_FLOOR | 0x01): jit_internal_emit_sparc_floor(jit, a1, a2, 1); break;
-  case (JIT_CEIL | 0x01): jit_internal_emit_sparc_floor(jit, a1, a2, 0); break;
-  case (JIT_ROUND | 0x01): jit_internal_emit_sparc_round(jit, a1, a2); break;
-  case (JIT_FRET | 0x01):
-   if (op->arg_size == sizeof(float)) {
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fdtos_val)); __f->rd = ((sparc_f0)); __f->rs1 = ((0)); __f->rs2 = ((a1)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   } else {
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fmovs_val)); __f->rd = ((sparc_f0)); __f->rs1 = ((0)); __f->rs2 = ((a1)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fmovs_val)); __f->rd = ((sparc_f1)); __f->rs1 = ((0)); __f->rs2 = ((a1 + 1)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)(((jit->ip))); __f->op = (2); __f->imm = ((8)); __f->i = 1; __f->rd = ((sparc_g0)); __f->rs1 = ((sparc_i7)); __f->op3 = (56); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (2); __f->imm = ((0)); __f->i = 1; __f->rd = ((sparc_g0)); __f->rs1 = ((sparc_g0)); __f->op3 = (61); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   break;
-  case (JIT_FRETVAL):
-   if (op->arg_size == sizeof(float)) do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fstod_val)); __f->rd = ((sparc_f0)); __f->rs1 = ((0)); __f->rs2 = ((sparc_f0)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   break;
-  case (JIT_FLD | 0x01):
-   if (op->arg_size == sizeof(double)) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_g0)); __f->op3 = (35); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   else {
-    do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((sparc_g0)); __f->op3 = (32); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fstod_val)); __f->rd = ((a1)); __f->rs1 = ((0)); __f->rs2 = ((a1)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   break;
-  case (JIT_FLD | 0x02):
-   if (op->arg_size == sizeof(double)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a2)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_g0)); __f->op3 = (35); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   else {
-    do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a2)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_g0)); __f->op3 = (32); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fstod_val)); __f->rd = ((a1)); __f->rs1 = ((0)); __f->rs2 = ((a1)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   break;
-  case (JIT_FLDX | 0x01):
-   if (op->arg_size == sizeof(double)) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (35); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   else {
-    do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0); __f->i = 0; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->rs2 = ((a3)); __f->op3 = (32); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fstod_val)); __f->rd = ((a1)); __f->rs1 = ((0)); __f->rs2 = ((a1)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   break;
-  case (JIT_FLDX | 0x02):
-   if (op->arg_size == sizeof(double)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (35); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   else {
-    do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a3)); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((a2)); __f->op3 = (32); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fstod_val)); __f->rd = ((a1)); __f->rs1 = ((0)); __f->rs2 = ((a1)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   break;
-  case (JIT_FST | 0x01):
-   if (op->arg_size == sizeof(double)) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a2)); __f->rs1 = ((a1)); __f->rs2 = ((sparc_g0)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   else {
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fdtos_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((a2)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((sparc_f30)); __f->rs1 = ((a1)); __f->rs2 = ((sparc_g0)); __f->op3 = (36); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   break;
-  case (JIT_FST | 0x02):
-   if (op->arg_size == sizeof(double)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a1)); __f->i = 1; __f->rd = ((a2)); __f->rs1 = ((sparc_g0)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   else {
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fdtos_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((a2)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a1)); __f->i = 1; __f->rd = ((sparc_f30)); __f->rs1 = ((sparc_g0)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   break;
-  case (JIT_FSTX | 0x01):
-   if (op->arg_size == sizeof(double)) do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((a3)); __f->rs1 = ((a2)); __f->rs2 = ((a1)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   else {
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fdtos_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((a3)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)((jit->ip)); __f->op = (3); __f->asi = (0x0); __f->i = 0; __f->rd = ((sparc_f30)); __f->rs1 = ((a2)); __f->rs2 = ((a1)); __f->op3 = (36); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   break;
-  case (JIT_FSTX | 0x02):
-   if (op->arg_size == sizeof(double)) do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a1)); __f->i = 1; __f->rd = ((a3)); __f->rs1 = ((a2)); __f->op3 = (39); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   else {
-    do { jit_internal_sparc_format3c *__f = (jit_internal_sparc_format3c*)((jit->ip)); __f->op = (2); __f->opf = ((sparc_fdtos_val)); __f->rd = ((sparc_f30)); __f->rs1 = ((0)); __f->rs2 = ((a3)); __f->op3 = (52); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-    do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((a1)); __f->i = 1; __f->rd = ((sparc_f30)); __f->rs1 = ((a2)); __f->op3 = (36); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   }
-   break;
+  case JIT_PROLOG: jit_internal_emit_prolog_op(jit, op); break;
+  case (JIT_ST | 0x02): do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a2)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x88; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x89; break; default: assert (0); } do { *((jit->ip))++ = ((((0)&0x03)<<6)|((((a2))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((jit->ip))++ = ((((0)&0x03)<<6)|(((4)&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a1)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } while (0); break;
+  case (JIT_ST | 0x01): do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a2)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x88; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x89; break; default: assert (0); } do { if ((((a1)&0x7)) == X86_ESP) { if (((0)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((a2)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((a2)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((a2)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((0)) == 0 && (((a1)&0x7)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((a2)&0x7)))&0x07)<<3)|((((((a1)&0x7)))&0x07))); } while (0); break; } if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((a2)&0x7)))&0x07)<<3)|((((((a1)&0x7)))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((a2)&0x7)))&0x07)<<3)|((((((a1)&0x7)))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break;
+  case (JIT_STX | 0x02): do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a3)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch ((op->arg_size)) { case 1: *(jit->ip)++ = (unsigned char)0x88; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x89; break; default: assert (0); } do { if ((((a2)&0x7)) == X86_ESP) { if (((a1)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((a3)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((a1))) >= -128 && (int)(((a1))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((a3)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a1))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((a3)&0x7)))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((a1)) == 0 && (((a2)&0x7)) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((((a3)&0x7)))&0x07)<<3)|((((((a2)&0x7)))&0x07))); } while (0); break; } if ((((int)(((a1))) >= -128 && (int)(((a1))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((((a3)&0x7)))&0x07)<<3)|((((((a2)&0x7)))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a1))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((((a3)&0x7)))&0x07)<<3)|((((((a2)&0x7)))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break;
+  case (JIT_STX | 0x01): do { do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | ((((a3)) > 7) ? AMD64_REX_R : 0) | ((((a2)) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { switch (((op->arg_size) == 8 ? 4 : (op->arg_size))) { case 1: *((jit->ip))++ = (unsigned char)0x88; break; case 2: *((jit->ip))++ = (unsigned char)0x66; case 4: *((jit->ip))++ = (unsigned char)0x89; break; default: assert (0); } do { if (((((a1)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && ((((a1)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break;
+  case (JIT_FMOV | 0x01): do { *(((jit->ip)))++ = (unsigned char)((0xf2)); do { unsigned char _amd64_rex_bits = (((0) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((0) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)((0x0f)); *(((jit->ip)))++ = (unsigned char)((0x10)); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0); break;
+  case (JIT_FMOV | 0x02): jit_internal_sse_mov_reg_safeimm(jit, op, a1, &op->flt_imm); break;
+  case (JIT_FADD | 0x01): jit_internal_emit_sse_alu_op(jit, op, X86_SSE_ADD); break;
+  case (JIT_FSUB | 0x01): jit_internal_emit_sse_sub_op(jit, op, a1, a2, a3); break;
+  case (JIT_FRSB | 0x01): jit_internal_emit_sse_sub_op(jit, op, a1, a3, a2); break;
+  case (JIT_FMUL | 0x01): jit_internal_emit_sse_alu_op(jit, op, X86_SSE_MUL); break;
+  case (JIT_FDIV | 0x01): jit_internal_emit_sse_div_op(jit, a1, a2, a3); break;
+                case (JIT_FNEG | 0x01): jit_internal_emit_sse_neg_op(jit, op, a1, a2); break;
+  case (JIT_FBLT | 0x01): jit_internal_emit_sse_branch(jit, op, a1, a2, a3, jit_internal_X86_CC_LT); break;
+                case (JIT_FBGT | 0x01): jit_internal_emit_sse_branch(jit, op, a1, a2, a3, jit_internal_X86_CC_GT); break;
+                case (JIT_FBGE | 0x01): jit_internal_emit_sse_branch(jit, op, a1, a2, a3, jit_internal_X86_CC_GE); break;
+                case (JIT_FBLE | 0x01): jit_internal_emit_sse_branch(jit, op, a1, a3, a2, jit_internal_X86_CC_GE); break;
+                case (JIT_FBEQ | 0x01): jit_internal_emit_sse_branch(jit, op, a1, a3, a2, jit_internal_X86_CC_EQ); break;
+                case (JIT_FBNE | 0x01): jit_internal_emit_sse_branch(jit, op, a1, a3, a2, jit_internal_X86_CC_NE); break;
+  case (JIT_EXT | 0x01): do { *(((jit->ip)))++ = (unsigned char)(0xf2); do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(0x0f); *(((jit->ip)))++ = (unsigned char)(0x2a); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0); break;
+                case (JIT_TRUNC | 0x01): do { *(((jit->ip)))++ = (unsigned char)(0xf2); do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((((a1)))) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((((a2)))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((((jit->ip))))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); *(((jit->ip)))++ = (unsigned char)(0x0f); *(((jit->ip)))++ = (unsigned char)(0x2c); do { do { *(((((jit->ip)))))++ = ((((3)&0x03)<<6)|(((((((a1)))))&0x07)<<3)|(((((((a2)))))&0x07))); } while (0); } while (0); } while (0); break;
+  case (JIT_CEIL | 0x01): jit_internal_emit_sse_floor(jit, a1, a2, 0); break;
+                case (JIT_FLOOR | 0x01): jit_internal_emit_sse_floor(jit, a1, a2, 1); break;
+  case (JIT_ROUND | 0x01): jit_internal_emit_sse_round(jit, op, a1, a2); break;
+  case (JIT_FRET | 0x01): jit_internal_emit_fret_op(jit, op); break;
+  case JIT_FRETVAL: jit_internal_emit_fretval_op(jit, op); break;
   case (JIT_UREG): jit_internal_emit_ureg(jit, a1, a2); break;
+  case (JIT_LREG): jit_internal_emit_lreg(jit, a1, a2); break;
   case (JIT_SYNCREG): jit_internal_emit_ureg(jit, a1, a2); break;
-  case (JIT_LREG):
-   if (JIT_REG(a2).spec == (3)) assert(0);
-   if (JIT_REG(a2).type == (0))
-    do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((jit_internal_GET_REG_POS(jit, a2))); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_fp)); __f->op3 = (0); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   else do { jit_internal_sparc_format3b *__f = (jit_internal_sparc_format3b*)((jit->ip)); __f->op = (3); __f->imm = ((jit_internal_GET_REG_POS(jit, a2))); __f->i = 1; __f->rd = ((a1)); __f->rs1 = ((sparc_fp)); __f->op3 = (35); ((jit->ip)) = (unsigned char *)((unsigned int*)__f + 1); } while (0);
-   break;
-  case JIT_RENAMEREG: do { jit_internal_sparc_format3a *__f = (jit_internal_sparc_format3a*)(((jit->ip))); __f->op = (2); __f->asi = (0); __f->i = 0; __f->rd = (((a1))); __f->rs1 = ((sparc_g0)); __f->rs2 = (((a2))); __f->op3 = (((0))|2); (((jit->ip))) = (unsigned char *)((unsigned int*)__f + 1); } while (0); break;
+  case JIT_RENAMEREG: do { if (((sizeof(void *))) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = (((((sizeof(void *)))) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || (((((sizeof(void *)))) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); switch (((sizeof(void *)))) { case 1: *(jit->ip)++ = (unsigned char)0x8a; break; case 2: case 4: case 8: *(jit->ip)++ = (unsigned char)0x8b; break; default: assert (0); } do { do { *(((jit->ip)))++ = ((((3)&0x03)<<6)|(((((a1)))&0x07)<<3)|(((((a2)))&0x07))); } while (0); } while (0); } while (0); break;
   case JIT_CODESTART: break;
   case JIT_NOP: break;
-  default: printf("sparc: unknown operation (opcode: 0x%x)\n", ((jit_opcode) (op->code & 0xfff8)) >> 3);
+  case (JIT_X86_STI | 0x02): do { do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | (((0) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); if ((op->arg_size) == 1) { *(jit->ip)++ = (unsigned char)0xc6; do { *((jit->ip))++ = 0x04; *((jit->ip))++ = 0x25; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); do { *((jit->ip)) = (unsigned char)(((a2)) & 0xff); ++((jit->ip)); } while (0); } else if ((op->arg_size) == 2) { *(jit->ip)++ = (unsigned char)0x66; *(jit->ip)++ = (unsigned char)0xc7; do { *((jit->ip))++ = 0x04; *((jit->ip))++ = 0x25; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); do { *(short*)((jit->ip)) = ((a2)); ((jit->ip)) += 2; } while (0); } else { *(jit->ip)++ = (unsigned char)0xc7; do { *((jit->ip))++ = 0x04; *((jit->ip))++ = 0x25; do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } } while (0); break;
+  case (JIT_X86_STI | 0x01): do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size) == 1 ? 0 : (op->arg_size)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size) == 1 ? 0 : (op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); if ((op->arg_size) == 1) { *(jit->ip)++ = (unsigned char)0xc6; do { if (((a1) & 0x7) == X86_ESP) { if (((0)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((0)) == 0 && ((a1) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); break; } if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); do { *((jit->ip)) = (unsigned char)(((a2)) & 0xff); ++((jit->ip)); } while (0); } else if ((op->arg_size) == 2) { *(jit->ip)++ = (unsigned char)0xc7; do { if (((a1) & 0x7) == X86_ESP) { if (((0)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((0)) == 0 && ((a1) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); break; } if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); do { *(short*)((jit->ip)) = ((a2)); ((jit->ip)) += 2; } while (0); } else { *(jit->ip)++ = (unsigned char)0xc7; do { if (((a1) & 0x7) == X86_ESP) { if (((0)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((0)) == 0 && ((a1) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); break; } if ((((int)(((0))) >= -128 && (int)(((0))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((0))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((((a1) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((0))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a2)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } } while (0); break;
+  case (JIT_X86_STXI | 0x02): do { if ((op->arg_size) == 2) *(jit->ip)++ = (unsigned char)0x66; do { unsigned char _amd64_rex_bits = ((((op->arg_size) == 1 ? 0 : (op->arg_size)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | (((0) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size) == 1 ? 0 : (op->arg_size)) == 1))) *(jit->ip)++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); if ((op->arg_size) == 1) { *(jit->ip)++ = (unsigned char)0xc6; do { if (((a2) & 0x7) == X86_ESP) { if (((a1)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((a1))) >= -128 && (int)(((a1))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a1))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((a1)) == 0 && ((a2) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); break; } if ((((int)(((a1))) >= -128 && (int)(((a1))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a1))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); do { *((jit->ip)) = (unsigned char)(((a3)) & 0xff); ++((jit->ip)); } while (0); } else if ((op->arg_size) == 2) { *(jit->ip)++ = (unsigned char)0xc7; do { if (((a2) & 0x7) == X86_ESP) { if (((a1)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((a1))) >= -128 && (int)(((a1))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a1))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((a1)) == 0 && ((a2) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); break; } if ((((int)(((a1))) >= -128 && (int)(((a1))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a1))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); do { *(short*)((jit->ip)) = ((a3)); ((jit->ip)) += 2; } while (0); } else { *(jit->ip)++ = (unsigned char)0xc7; do { if (((a2) & 0x7) == X86_ESP) { if (((a1)) == 0) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); } else if ((((int)(((a1))) >= -128 && (int)(((a1))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a1))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|(((X86_ESP)&0x07)<<3)|(((X86_ESP)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } break; } if (((a1)) == 0 && ((a2) & 0x7) != X86_EBP) { do { *(((jit->ip)))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); break; } if ((((int)(((a1))) >= -128 && (int)(((a1))) <= 127))) { do { *(((jit->ip)))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); do { *(((jit->ip))) = (unsigned char)((((a1))) & 0xff); ++(((jit->ip))); } while (0); } else { do { *(((jit->ip)))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((((a2) & 0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a1))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((a3)); *((jit->ip))++ = imb.b [0]; *((jit->ip))++ = imb.b [1]; *((jit->ip))++ = imb.b [2]; *((jit->ip))++ = imb.b [3]; } while (0); } } while (0); break;
+  case (JIT_X86_STXI | 0x01): do { do { unsigned char _amd64_rex_bits = ((((op->arg_size)) > 4) ? AMD64_REX_W : 0) | (((0) > 7) ? AMD64_REX_R : 0) | ((((a2)) > 7) ? AMD64_REX_X : 0) | ((((a1)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((op->arg_size)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { if (((op->arg_size) == 8 ? 4 : (op->arg_size)) == 1) { *((jit->ip))++ = (unsigned char)0xc6; do { if (((((a1)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && ((((a1)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); do { *(((jit->ip))) = (unsigned char)((((a3))) & 0xff); ++(((jit->ip))); } while (0); } else if (((op->arg_size) == 8 ? 4 : (op->arg_size)) == 2) { *((jit->ip))++ = (unsigned char)0x66; *((jit->ip))++ = (unsigned char)0xc7; do { if (((((a1)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && ((((a1)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); do { *(short*)(((jit->ip))) = (((a3))); (((jit->ip))) += 2; } while (0); } else { *((jit->ip))++ = (unsigned char)0xc7; do { if (((((a1)&0x7))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && ((((a1)&0x7))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|((((0))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((a1)&0x7)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) (((a3))); *(((jit->ip)))++ = imb.b [0]; *(((jit->ip)))++ = imb.b [1]; *(((jit->ip)))++ = imb.b [2]; *(((jit->ip)))++ = imb.b [3]; } while (0); } } while (0); } while (0); break;
+  case (JIT_X86_ADDMUL | 0x01): do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a3)) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0x8d; do { if ((((a2))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((op->arg_size))))&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((0))) == 0 && (((a2))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((op->arg_size))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); } else if ((((int)((((0)))) >= -128 && (int)((((0)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((op->arg_size))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((0)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((op->arg_size))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((0)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break;
+  case (JIT_X86_ADDMUL | 0x02): do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a2)) > 7) ? AMD64_REX_X : 0) | (((((-1))) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0x8d; do { if (((((-1)))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((op->arg_size))))&0x03)<<6)|(((((((a2)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((a3))) == 0 && ((((-1)))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((op->arg_size))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((-1))))&0x7))&0x07))); } while (0); } else if ((((int)((((a3)))) >= -128 && (int)((((a3)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((op->arg_size))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((-1))))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((a3)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((op->arg_size))))&0x03)<<6)|(((((((a2)&0x7)))&0x7)&0x07)<<3)|((((((((-1))))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((a3)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break;
+  case (JIT_X86_ADDIMM): {
+   jit_value tmp;
+   memcpy(&tmp, &op->flt_imm, sizeof(jit_value));
+   do { do { unsigned char _amd64_rex_bits = ((((8)) > 4) ? AMD64_REX_W : 0) | ((((a1)) > 7) ? AMD64_REX_R : 0) | ((((a3)) > 7) ? AMD64_REX_X : 0) | ((((a2)) > 7) ? AMD64_REX_B : 0); if ((_amd64_rex_bits != 0) || ((((8)) == 1))) *((jit->ip))++ = ((unsigned char)(0x40 | (_amd64_rex_bits))); } while (0); do { *((jit->ip))++ = (unsigned char)0x8d; do { if ((((a2))) == (-1)) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7))))&0x07)<<3)|(((5)&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((tmp)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } else if ((((tmp))) == 0 && (((a2))) != X86_EBP) { do { *((((jit->ip))))++ = ((((0)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); } else if ((((int)((((tmp)))) >= -128 && (int)((((tmp)))) <= 127))) { do { *((((jit->ip))))++ = ((((1)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { *((((jit->ip)))) = (unsigned char)(((((tmp)))) & 0xff); ++((((jit->ip)))); } while (0); } else { do { *((((jit->ip))))++ = ((((2)&0x03)<<6)|(((((((a1)&0x7))))&0x07)<<3)|(((4)&0x07))); } while (0); do { *((((jit->ip))))++ = (((((((0))))&0x03)<<6)|(((((((a3)&0x7)))&0x7)&0x07)<<3)|(((((((a2)))&0x7))&0x07))); } while (0); do { jit_internal_x86_imm_buf imb; imb.val = (int) ((((tmp)))); *((((jit->ip))))++ = imb.b [0]; *((((jit->ip))))++ = imb.b [1]; *((((jit->ip))))++ = imb.b [2]; *((((jit->ip))))++ = imb.b [3]; } while (0); } } while (0); } while (0); } while (0); break;
+  }
+  default: printf("common86: unknown operation (opcode: 0x%x)\n", ((jit_opcode) (op->code & 0xfff8)) >> 3);
  }
-}
-struct jit_reg_allocator * jit_reg_allocator_create()
-{
- struct jit_reg_allocator * a = malloc(sizeof(struct jit_reg_allocator));
- a->gp_reg_cnt = 14;
- a->gp_regs = malloc(sizeof(jit_hw_reg) * (a->gp_reg_cnt + 1));
- int i = 0;
- a->gp_regs[i++] = (jit_hw_reg) { sparc_i0, "i0", 1, 0, 11 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_i1, "i1", 1, 0, 12 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_i2, "i2", 1, 0, 13 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_i3, "i3", 1, 0, 14 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_i4, "i4", 1, 0, 15 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_i5, "i5", 1, 0, 16 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_l0, "l0", 1, 0, 1 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_l1, "l1", 1, 0, 2 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_l2, "l2", 1, 0, 3 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_l3, "l3", 1, 0, 4 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_l4, "l4", 1, 0, 5 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_l5, "l5", 1, 0, 6 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_l6, "l6", 1, 0, 7 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_l7, "l7", 1, 0, 8 };
- a->gp_regs[i++] = (jit_hw_reg) { sparc_fp, "fp", 0, 0, 0 };
- a->fp_reg_cnt = 4;
- a->fp_regs = malloc(sizeof(jit_hw_reg) * a->fp_reg_cnt);
- i = 0;
- a->fp_regs[i++] = (jit_hw_reg) { sparc_f0, "f0", 0, 1, 1 };
- a->fp_regs[i++] = (jit_hw_reg) { sparc_f2, "f2", 0, 1, 2 };
- a->fp_regs[i++] = (jit_hw_reg) { sparc_f4, "f4", 0, 1, 3 };
- a->fp_regs[i++] = (jit_hw_reg) { sparc_f6, "f6", 0, 1, 4 };
- jit_hw_reg * reg_i7 = malloc(sizeof(jit_hw_reg));
- *reg_i7 = (jit_hw_reg) { sparc_i7, "iX", 1, 0, 0 };
- a->fp_reg = sparc_fp;
- a->ret_reg = NULL;
- a->fpret_reg = &(a->fp_regs[0]);
- a->gp_arg_reg_cnt = 6;
- a->gp_arg_regs = malloc(sizeof(jit_hw_reg *) * 6);
- for (int i = 0; i < 6; i++)
-  a->gp_arg_regs[i] = &(a->gp_regs[i]);
- a->fp_arg_reg_cnt = 0;
- a->fp_arg_regs = NULL;
- return a;
 }
 static jit_hw_reg * jit_internal_rmap_is_associated(jit_rmap * rmap, int reg_id, int fp, jit_value * virt_reg);
 static inline int jit_internal_bufprint(char *buf, const char *format, ...) {
@@ -2154,6 +2633,8 @@ char * jit_get_op_name(struct jit_op * op)
   case JIT_LDX: return "ldx";
   case JIT_ST: return "st";
   case JIT_STX: return "stx";
+  case JIT_MEMCPY:return "memcpy";
+  case JIT_MEMSET:return "memset";
   case JIT_JMP: return "jmp";
   case JIT_PATCH: return ".patch";
   case JIT_PREPARE: return "prepare";
@@ -2212,6 +2693,7 @@ char * jit_get_op_name(struct jit_op * op)
   case JIT_NOP: return "nop";
   case JIT_CODE_ALIGN: return ".align";
   case JIT_DATA_BYTE: return ".byte";
+  case JIT_DATA_BYTES: return ".bytes";
   case JIT_DATA_REF_CODE: return ".ref_code";
   case JIT_DATA_REF_DATA: return ".ref_data";
   case JIT_REF_CODE: return "ref_code";
@@ -2220,6 +2702,15 @@ char * jit_get_op_name(struct jit_op * op)
   case JIT_TRACE: return ".trace";
   case JIT_FORCE_SPILL: return "jit_internal_force_spill";
   case JIT_FORCE_ASSOC: return "jit_internal_force_assoc";
+  case JIT_MARK: return "mark";
+  case JIT_TOUCH: return "touch";
+  case JIT_TRANSFER: return "transfer";
+  case JIT_TRANSFER_CPY: return "transfer_cpy";
+  case JIT_TRANSFER_AND: return "transfer_and";
+  case JIT_TRANSFER_OR: return "transfer_or";
+  case JIT_TRANSFER_XOR: return "transfer_xor";
+  case JIT_TRANSFER_ADD: return "transfer_add";
+  case JIT_TRANSFER_SUB: return "transfer_sub";
   case JIT_FMOV: return "fmov";
   case JIT_FADD: return "fadd";
   case JIT_FSUB: return "fsub";
@@ -2250,18 +2741,18 @@ char * jit_get_op_name(struct jit_op * op)
 }
 void jit_get_reg_name(struct jit_disasm *disasm, char * r, int reg)
 {
- if (reg == (jit_mkreg((0), (2), 0))) strcpy(r, disasm->reg_fp_template);
- else if (reg == (jit_mkreg((0), (2), 1))) strcpy(r, disasm->reg_out_template);
- else if (reg == (jit_mkreg((0), (1), 0))) strcpy(r, disasm->reg_imm_template);
- else if (reg == (jit_mkreg((1), (1), 0))) strcpy(r, disasm->reg_fimm_template);
+ if (reg == (((((0)) & 0x01) | ((((2)) & 0x03) << 1) | ((0) & 0xfffffff) << 4))) strcpy(r, disasm->reg_fp_template);
+ else if (reg == (((((0)) & 0x01) | ((((2)) & 0x03) << 1) | ((1) & 0xfffffff) << 4))) strcpy(r, disasm->reg_out_template);
+ else if (reg == (((((0)) & 0x01) | ((((1)) & 0x03) << 1) | ((0) & 0xfffffff) << 4))) strcpy(r, disasm->reg_imm_template);
+ else if (reg == (((((1)) & 0x01) | ((((1)) & 0x03) << 1) | ((0) & 0xfffffff) << 4))) strcpy(r, disasm->reg_fimm_template);
  else {
-  if (JIT_REG(reg).spec == (0)) {
-   if (JIT_REG(reg).type == (0)) sprintf(r, disasm->reg_template, JIT_REG(reg).id);
-   else sprintf(r, disasm->freg_template, JIT_REG(reg).id);
+  if ((((reg) >> 1) & 0x03) == (0)) {
+   if (((reg) & 0x01) == (0)) sprintf(r, disasm->reg_template, (((reg) >> 4) & 0xfffffff));
+   else sprintf(r, disasm->freg_template, (((reg) >> 4) & 0xfffffff));
   }
-  else if (JIT_REG(reg).spec == (3)) {
-   if (JIT_REG(reg).type == (0)) sprintf(r, disasm->arg_template, JIT_REG(reg).id);
-   else sprintf(r, disasm->farg_template, JIT_REG(reg).id);
+  else if ((((reg) >> 1) & 0x03) == (3)) {
+   if (((reg) & 0x01) == (0)) sprintf(r, disasm->arg_template, (((reg) >> 4) & 0xfffffff));
+   else sprintf(r, disasm->farg_template, (((reg) >> 4) & 0xfffffff));
   } else sprintf(r, "%s", disasm->reg_unknown_template);
  }
 }
@@ -2437,6 +2928,14 @@ int jit_internal_print_op(FILE *f, struct jit_disasm * disasm, struct jit_op *op
     while (strlen((linebuf)) < (13)) { strcat((linebuf), " "); };
     jit_internal_bufprint(linebuf, disasm->generic_value_template, op->arg[0]);
     goto print;
+   case JIT_DATA_BYTES:
+    jit_internal_bufprint(linebuf, "%s ", op_name);
+    while (strlen((linebuf)) < (13)) { strcat((linebuf), " "); };
+    for (int i = 0; i < op->arg[0]; i++) {
+     jit_internal_bufprint(linebuf, disasm->generic_value_template, ((unsigned char *)op->addendum)[i]);
+     jit_internal_bufprint(linebuf, " ");
+    }
+    goto print;
    case JIT_DATA_REF_CODE:
    case JIT_DATA_REF_DATA:
     jit_internal_bufprint(linebuf, "%s ", op_name);
@@ -2517,6 +3016,13 @@ int jit_internal_print_op_compilable(struct jit_disasm *disasm, struct jit_op * 
   case JIT_DATA_BYTE:
    jit_internal_bufprint(linebuf, "jit_data_byte(p, ");
    jit_internal_bufprint(linebuf, disasm->generic_value_template, op->arg[0]);
+   goto print;
+  case JIT_DATA_BYTES:
+   for (int i = 0; i < op->arg[0]; i++) {
+    jit_internal_bufprint(linebuf, "jit_data_byte(p, ");
+    jit_internal_bufprint(linebuf, disasm->generic_value_template, ((unsigned char *)op->addendum) [i]);
+    if (i < op->arg[0] - 1) jit_internal_bufprint(linebuf, ");\n");
+   }
    goto print;
   case JIT_REF_CODE:
   case JIT_REF_DATA:
@@ -2600,7 +3106,7 @@ static void jit_dump_ops_general(struct jit *jit, jit_tree *labels, int verbosit
 }
 static char *jit_internal_platform_id()
 {
- return "sparc";
+ return "amd64";
 }
 static inline void jit_internal_print_op_bytes(FILE *f, struct jit *jit, jit_op *op) {
  for (int i = 0; i < op->code_length; i++)
@@ -2632,11 +3138,16 @@ static FILE *jit_internal_open_disasm()
 }
 static jit_op *jit_internal_print_combined_op(FILE *f, struct jit *jit, struct jit_op *op, jit_tree *labels)
 {
- if (((jit_opcode) (op->code & 0xfff8)) == JIT_DATA_BYTE) {
+ jit_opcode opcode = ((jit_opcode) (op->code & 0xfff8));
+ if ((opcode == JIT_DATA_BYTE) || (opcode == JIT_DATA_BYTES)) {
   fprintf(f, ".text\n%s.byte\n", jit_disasm_general.indent_template);
   fprintf(f, ".data\n");
-  while (op && (((jit_opcode) (op->code & 0xfff8)) == JIT_DATA_BYTE)) {
-   fprintf(f, "%02x ", (unsigned char) op->arg[0]);
+  while (op && ((((jit_opcode) (op->code & 0xfff8)) == JIT_DATA_BYTE) || (((jit_opcode) (op->code & 0xfff8)) == JIT_DATA_BYTES))) {
+   if (((jit_opcode) (op->code & 0xfff8)) == JIT_DATA_BYTE) fprintf(f, "%02x ", (unsigned char) op->arg[0]);
+   if (((jit_opcode) (op->code & 0xfff8)) == JIT_DATA_BYTES) {
+    for (int i = 0; i < op->arg[0]; i++)
+     fprintf(f, "%02x ", ((unsigned char *) op->addendum)[i]);
+   }
    op = op->next;
   }
   fprintf(f, "\n");
@@ -2644,7 +3155,7 @@ static jit_op *jit_internal_print_combined_op(FILE *f, struct jit *jit, struct j
   op = op->prev;
   return op;
  }
- if (((jit_opcode) (op->code & 0xfff8)) == JIT_COMMENT) {
+ if (opcode == JIT_COMMENT) {
   fprintf(f, ".comment\n");
   jit_internal_print_op(f, &jit_disasm_general, op, labels, (0x100));
   fprintf(f, "\n");
@@ -2653,7 +3164,7 @@ static jit_op *jit_internal_print_combined_op(FILE *f, struct jit *jit, struct j
  fprintf(f, ".text\n");
  jit_internal_print_op(f, &jit_disasm_general, op, labels, (0x100));
  fprintf(f, "\n");
- switch (((jit_opcode) (op->code & 0xfff8))) {
+ switch (opcode) {
   case JIT_CODE_ALIGN:
    if (op->next) {
     fprintf(f, "\n.nl\n");
@@ -2809,7 +3320,7 @@ static int jit_internal_check_op_without_effect(jit_op *op, char *msg_buf)
 static void jit_internal_print_regs(jit_tree_key reg, jit_tree_value v, void *thunk)
 {
  char buf[32];
- if (reg == (jit_mkreg((0), (2), 0))) return;
+ if (reg == (((((0)) & 0x01) | ((((2)) & 0x03) << 1) | ((0) & 0xfffffff) << 4))) return;
  jit_get_reg_name(&jit_debugging_disasm, buf, reg);
  strcat(thunk, " ");
  strcat(thunk, buf);
@@ -2831,6 +3342,7 @@ static int jit_internal_check_uninitialized_registers(jit_op *op, char *msg_buf)
 static int jit_internal_valid_size(int size) {
  switch (size) {
   case 1: case 2: case 4:
+  case 8:
    return 1;
   default:
    return 0;
@@ -2867,9 +3379,9 @@ static int jit_internal_check_register_types(struct jit *jit, jit_op *op, char *
   case JIT_GETARG: {
    struct jit_func_info * info = jit_current_func_info(jit);
    if (info->args[op->arg[1]].type == JIT_FLOAT_NUM) {
-    if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[1 - 1]).type == (1)))) return 0;
+    if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[1 - 1]) & 0x01) == (1)))) return 0;
    } else {
-    if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[1 - 1]).type == (0)))) return 0;
+    if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[1 - 1]) & 0x01) == (0)))) return 0;
    }
    break;
   }
@@ -2878,24 +3390,24 @@ static int jit_internal_check_register_types(struct jit *jit, jit_op *op, char *
   case JIT_CEIL:
   case JIT_ROUND:
   case JIT_FLOOR:
-   if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[1 - 1]).type == (0))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[2 - 1]).type == (1)))) return 0;
+   if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[1 - 1]) & 0x01) == (0))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[2 - 1]) & 0x01) == (1)))) return 0;
    break;
   case JIT_EXT:
   case JIT_FLD:
-   if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[1 - 1]).type == (1))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[2 - 1]).type == (0)))) return 0;
+   if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[1 - 1]) & 0x01) == (1))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[2 - 1]) & 0x01) == (0)))) return 0;
    break;
   case JIT_FLDX:
-   if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[1 - 1]).type == (1))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[2 - 1]).type == (0))) && ((((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[3 - 1]).type == (0)))) return 0;
+   if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[1 - 1]) & 0x01) == (1))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[2 - 1]) & 0x01) == (0))) && ((((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[3 - 1]) & 0x01) == (0)))) return 0;
    break;
   case JIT_FSTX:
-   if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[1 - 1]).type == (0))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[2 - 1]).type == (0))) && ((((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[3 - 1]).type == (1)))) return 0;
+   if (((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[1 - 1]) & 0x01) == (0))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[2 - 1]) & 0x01) == (0))) && ((((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[3 - 1]) & 0x01) == (1)))) return 0;
    break;
   case JIT_FORCE_SPILL:
   case JIT_FORCE_ASSOC:
    return 0;
   default:
-   if (!op->fp && ((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[1 - 1]).type == (0))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[2 - 1]).type == (0))) && ((((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[3 - 1]).type == (0)))) return 0;
-   if (op->fp && ((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[1 - 1]).type == (1))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[2 - 1]).type == (1))) && ((((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x03)) || (JIT_REG(op->arg[3 - 1]).type == (1)))) return 0;
+   if (!op->fp && ((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[1 - 1]) & 0x01) == (0))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[2 - 1]) & 0x01) == (0))) && ((((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[3 - 1]) & 0x01) == (0)))) return 0;
+   if (op->fp && ((((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((1) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[1 - 1]) & 0x01) == (1))) && ((((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((2) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[2 - 1]) & 0x01) == (1))) && ((((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x01) && ((((op)->spec >> ((3) - 1) * 2) & 0x03) != 0x03)) || (((op->arg[3 - 1]) & 0x01) == (1)))) return 0;
  }
  jit_internal_append_msg(msg_buf, "register type mismatch");
  return JIT_WARN_REGISTER_TYPE_MISMATCH;
@@ -2905,7 +3417,7 @@ static int jit_op_is_data_op(jit_op *op)
  while (op && ((((jit_opcode) (op->code & 0xfff8)) == JIT_LABEL) || (((jit_opcode) (op->code & 0xfff8)) == JIT_PATCH))) op = op->next;
  if (!op) return 0;
  jit_opcode code = ((jit_opcode) (op->code & 0xfff8));
- return ((code == JIT_DATA_BYTE) || (code == JIT_DATA_REF_CODE) || (code == JIT_DATA_REF_DATA));
+ return ((code == JIT_DATA_BYTE) || (code == JIT_DATA_BYTES) || (code == JIT_DATA_REF_CODE) || (code == JIT_DATA_REF_DATA));
 }
 static int jit_internal_check_data_alignment(jit_op *op, char *msg_buf)
 {
@@ -2980,11 +3492,11 @@ static inline void jit_flw_initialize(struct jit * jit)
   if (((jit_opcode) (op->code & 0xfff8)) == JIT_GETARG) {
    int arg_id = op->arg[1];
    if (func_info->args[arg_id].type != JIT_FLOAT_NUM) {
-    jit_set_add(op->live_in, jit_mkreg((0), (3), arg_id));
+    jit_set_add(op->live_in, ((((0)) & 0x01) | ((((3)) & 0x03) << 1) | ((arg_id) & 0xfffffff) << 4));
    } else {
-    jit_set_add(op->live_in, jit_mkreg((1), (3), arg_id));
+    jit_set_add(op->live_in, ((((1)) & 0x01) | ((((3)) & 0x03) << 1) | ((arg_id) & 0xfffffff) << 4));
     if (func_info->args[arg_id].overflow)
-     jit_set_add(op->live_in, jit_mkreg_ex((1), (3), arg_id));
+     jit_set_add(op->live_in, ((((1)) & 0x01) | ((((3)) & 0x03) << 1) | (1 << 3) | ((arg_id) & 0xfffffff) << 4));
    }
   }
   op = op->next;
@@ -2992,20 +3504,11 @@ static inline void jit_flw_initialize(struct jit * jit)
 }
 static inline void jit_internal_flw_analyze_prolog(struct jit * jit, jit_op * op, struct jit_func_info * func_info)
 {
- int assoc_gp = 0;
- int argcount = func_info->general_arg_cnt + func_info->float_arg_cnt;
- for (int j = 0; j < argcount; j++) {
-  if (assoc_gp >= jit->reg_al->gp_arg_reg_cnt) break;
-  if (func_info->args[j].type != JIT_FLOAT_NUM) {
-   jit_set_remove(op->live_in, jit_mkreg((0), (3), j));
-   assoc_gp++;
+ for (int i = 0; i < func_info->general_arg_cnt + func_info->float_arg_cnt; i++) {
+  if (func_info->args[i].type == JIT_FLOAT_NUM) {
+   jit_set_remove(op->live_in, ((((1)) & 0x01) | ((((3)) & 0x03) << 1) | ((i) & 0xfffffff) << 4));
   } else {
-   jit_set_remove(op->live_in, jit_mkreg((1), (3), j));
-   assoc_gp++;
-   if (func_info->args[j].size == sizeof(double)) {
-    jit_set_remove(op->live_in, jit_mkreg_ex((1), (3), j));
-    assoc_gp++;
-   }
+   jit_set_remove(op->live_in, ((((0)) & 0x01) | ((((3)) & 0x03) << 1) | ((i) & 0xfffffff) << 4));
   }
  }
 }
@@ -3122,6 +3625,7 @@ static void jit_dead_code_analysis(struct jit *jit, int remove_dead_code)
   if (((jit_opcode) (op->code & 0xfff8)) == JIT_LABEL) op->in_use = 1;
   if (((jit_opcode) (op->code & 0xfff8)) == JIT_PATCH) op->in_use = 1;
   if (((jit_opcode) (op->code & 0xfff8)) == JIT_COMMENT) op->in_use = 1;
+  if (((jit_opcode) (op->code & 0xfff8)) == JIT_MARK) op->in_use = 1;
  }
  if (!remove_dead_code) return;
  jit_op *op = jit_op_first(jit->ops);
@@ -3185,7 +3689,7 @@ static int jit_internal_rmap_subset(jit_op * op, jit_tree * current, jit_tree * 
 {
  if (current == NULL) return 1;
  jit_set * tgt_livein = op->jmp_addr->live_in;
- if (!jit_set_get(tgt_livein, current->key) && !jit_set_get(op->live_out, current->key)) goto skip;
+ if (!jit_set_get(tgt_livein, current->key)) goto skip;
  jit_tree * found = jit_tree_search(target, current->key);
  if ((!found) || (current->value != found->value)) return 0;
 skip:
@@ -3244,16 +3748,24 @@ static int jit_internal_candidate_score(jit_op * op, jit_value virtreg, jit_hw_r
    else score += (used_in_steps * 5);
   }
  }
+ jit_tree * hint_node = jit_tree_search(op->allocator_hints, virtreg);
+ if (hint_node) {
+  struct jit_allocator_hint * hint = (struct jit_allocator_hint *)hint_node->value;
+  if ((hreg->fp == 0) && (hreg->id == AMD64_RAX)) {
+   score += hint->should_be_eax * 5;
+  }
+  if (hreg->callee_saved) score += (hint->should_be_calleesaved - 1) * 15;
+ }
  return score;
 }
 static jit_hw_reg * jit_internal_rmap_spill_candidate(struct jit_reg_allocator * al, jit_op * op, jit_value virtreg, int * spill, jit_value * reg_to_spill, int callee_saved)
 {
- jit_reg r = JIT_REG(virtreg);
+ jit_reg r = (jit_reg) virtreg;
  jit_hw_reg * regs;
  int reg_count;
  jit_hw_reg * result = NULL;
  int best_score = INT_MIN;
- if (r.type == (0)) {
+ if (((r) & 0x01) == (0)) {
   regs = al->gp_regs;
   reg_count = al->gp_reg_cnt;
  } else {
@@ -3322,28 +3834,18 @@ static jit_hw_reg * jit_internal_make_free_reg(struct jit_reg_allocator * al, ji
 }
 static void jit_internal_assign_regs_for_args(struct jit_reg_allocator * al, jit_op * op)
 {
- int fp_arg_cnt = 0;
  struct jit_func_info * info = (struct jit_func_info *) op->arg[1];
- for (int i = 0; i < info->general_arg_cnt + info->float_arg_cnt; i++) {
-  struct jit_inp_arg a = info->args[i];
-  if (a.type == JIT_FLOAT_NUM) fp_arg_cnt += a.size / sizeof(float);
- }
  int assoc_gp_regs = 0;
+ int assoc_fp_regs = 0;
  for (int i = 0; i < info->general_arg_cnt + info->float_arg_cnt; i++) {
-  if (assoc_gp_regs >= al->gp_arg_reg_cnt) break;
   int isfp_arg = (info->args[i].type == JIT_FLOAT_NUM);
-  if (!isfp_arg) {
-   jit_internal_rmap_assoc(op->regmap, jit_mkreg((0), (3), i), al->gp_arg_regs[assoc_gp_regs]);
+  if (!isfp_arg && (assoc_gp_regs < al->gp_arg_reg_cnt)) {
+   jit_internal_rmap_assoc(op->regmap, ((((0)) & 0x01) | ((((3)) & 0x03) << 1) | ((i) & 0xfffffff) << 4), al->gp_arg_regs[assoc_gp_regs]);
    assoc_gp_regs++;
   }
-  if (isfp_arg) {
-   jit_internal_rmap_assoc(op->regmap, jit_mkreg((1), (3), i), al->gp_arg_regs[assoc_gp_regs]);
-   assoc_gp_regs++;
-   if ((info->args[i].size == sizeof(double)) && (assoc_gp_regs < al->gp_reg_cnt)) {
-    jit_value r = jit_mkreg_ex((1), (3), i);
-    jit_internal_rmap_assoc(op->regmap, (int)r, al->gp_arg_regs[assoc_gp_regs]);
-    assoc_gp_regs++;
-   }
+  if (isfp_arg && (assoc_fp_regs < al->fp_arg_reg_cnt)) {
+   jit_internal_rmap_assoc(op->regmap, ((((1)) & 0x01) | ((((3)) & 0x03) << 1) | ((i) & 0xfffffff) << 4), al->fp_arg_regs[assoc_fp_regs]);
+   assoc_fp_regs++;
   }
  }
 }
@@ -3351,6 +3853,22 @@ static void jit_internal_prepare_registers_for_call(struct jit_reg_allocator * a
 {
  jit_value r, reg;
  jit_hw_reg * hreg = NULL;
+ if (al->ret_reg) hreg = jit_internal_rmap_is_associated(op->regmap, al->ret_reg->id, 0, &r);
+ if (hreg) {
+  int alive = (jit_set_get(op->live_out, r) || (jit_set_get(op->live_in, r)));
+  if (!alive) goto skip;
+  int spill;
+  jit_value spill_reg;
+  jit_hw_reg * freereg = jit_internal_rmap_spill_candidate(al, op, r, &spill, &spill_reg, 1);
+  if (freereg && !spill) {
+   jit_internal_rename_reg(op, freereg->id, al->ret_reg->id);
+   jit_internal_rmap_unassoc(op->regmap, r);
+   jit_internal_rmap_assoc(op->regmap, r, freereg);
+  } else {
+   jit_internal_sync_reg(op, hreg, r);
+  }
+ }
+skip:
  if (al->fpret_reg) {
   hreg = jit_internal_rmap_is_associated(op->regmap, al->fpret_reg->id, 1, &r);
   if (hreg) jit_internal_sync_reg(op, hreg, r);
@@ -3381,10 +3899,11 @@ static int jit_internal_assign_getarg(jit_op * op, struct jit_reg_allocator * al
 {
  int arg_id = op->arg[1];
  struct jit_inp_arg * arg = &(al->current_func_info->args[arg_id]);
- int reg_id = jit_mkreg(arg->type == JIT_FLOAT_NUM ? (1) : (0), (3), arg_id);
+ int reg_id = (((arg->type == JIT_FLOAT_NUM ? (1) : (0)) & 0x01) | ((((3)) & 0x03) << 1) | ((arg_id) & 0xfffffff) << 4);
  if (!jit_set_get(op->live_out, reg_id)) {
   if (((arg->type != JIT_FLOAT_NUM) && (arg->size == (sizeof(void *))))
-     ) {
+   || ((arg->type == JIT_FLOAT_NUM) && (arg->size == sizeof(double))))
+  {
    jit_hw_reg * hreg = jit_internal_rmap_get(op->regmap, reg_id);
    if (hreg) {
     jit_internal_rmap_unassoc(op->regmap, reg_id);
@@ -3424,15 +3943,7 @@ static int jit_internal_assign_call(jit_op * op, struct jit_reg_allocator * al)
 {
  jit_internal_spill_ret_retreg(op, al->ret_reg);
  jit_internal_spill_ret_retreg(op, al->fpret_reg);
- jit_value reg;
- for (int q = 0; q < al->fp_reg_cnt; q++) {
-  jit_hw_reg * hreg = jit_internal_rmap_is_associated(op->regmap, al->fp_regs[q].id, 1, &reg);
-  if (hreg) {
-   jit_internal_unload_reg(op, hreg, reg);
-   jit_internal_rmap_unassoc(op->regmap, reg);
-  }
- }
- return 0;
+ return 1;
 }
 static int jit_internal_spill_all_registers(jit_op *op, struct jit_reg_allocator * al)
 {
@@ -3472,20 +3983,34 @@ static int jit_internal_force_assoc(jit_op *op, struct jit_reg_allocator *al)
 }
 static void jit_internal_associate_register_alias(struct jit_reg_allocator * al, jit_op * op, int i)
 {
- if ((int)op->arg[i] == (int)(jit_mkreg((0), (2), 1))) op->r_arg[i] = al->ret_reg->id;
- else if ((int)op->arg[i] == (int)(jit_mkreg((0), (2), 0))) op->r_arg[i] = al->fp_reg;
+ if ((int)op->arg[i] == (int)(((((0)) & 0x01) | ((((2)) & 0x03) << 1) | ((1) & 0xfffffff) << 4))) op->r_arg[i] = al->ret_reg->id;
+ else if ((int)op->arg[i] == (int)(((((0)) & 0x01) | ((((2)) & 0x03) << 1) | ((0) & 0xfffffff) << 4))) op->r_arg[i] = al->fp_reg;
  else assert(0);
+}
+static int jit_internal_is_transfer_op(jit_op *op)
+{
+ jit_opcode code = ((jit_opcode) (op->code & 0xfff8));
+ return (code == JIT_TRANSFER_ADD)
+  || (code == JIT_TRANSFER_SUB)
+  || (code == JIT_TRANSFER_OR)
+  || (code == JIT_TRANSFER_XOR)
+  || (code == JIT_TRANSFER_AND);
 }
 static void jit_internal_associate_register(struct jit_reg_allocator * al, jit_op * op, int i)
 {
  jit_hw_reg * reg = jit_internal_rmap_get(op->regmap, op->arg[i]);
+ if (((jit_opcode) (op->code & 0xfff8)) == JIT_FRETVAL) printf(":JJJ:%i\n", reg->id);
  if (reg) op->r_arg[i] = reg->id;
  else {
-  reg = jit_internal_make_free_reg(al, op, op->arg[i]);
-  jit_internal_rmap_assoc(op->regmap, op->arg[i], reg);
-  op->r_arg[i] = reg->id;
-  if (jit_set_get(op->live_in, op->arg[i]))
-   jit_internal_load_reg(op, jit_internal_rmap_get(op->regmap, op->arg[i]), op->arg[i]);
+  if (!jit_internal_is_transfer_op(op)
+  && (((jit_opcode) (op->code & 0xfff8)) != JIT_CALL)
+  ) {
+   reg = jit_internal_make_free_reg(al, op, op->arg[i]);
+   jit_internal_rmap_assoc(op->regmap, op->arg[i], reg);
+   op->r_arg[i] = reg->id;
+   if (jit_set_get(op->live_in, op->arg[i]))
+    jit_internal_load_reg(op, jit_internal_rmap_get(op->regmap, op->arg[i]), op->arg[i]);
+  } else op->r_arg[i] = -1;
  }
 }
 static void jit_internal_assign_regs(struct jit * jit, struct jit_op * op)
@@ -3507,6 +4032,7 @@ static void jit_internal_assign_regs(struct jit * jit, struct jit_op * op)
   case JIT_PREPARE: jit_internal_prepare_registers_for_call(al, op); break;
   case JIT_PUTARG: skip = 1; break;
   case JIT_FPUTARG: skip = 1; break;
+  case JIT_RETVAL: skip = jit_internal_assign_ret_reg(op, al->ret_reg); break;
   case JIT_FRETVAL: skip = jit_internal_assign_ret_reg(op, al->fpret_reg); break;
   case JIT_GETARG: skip = jit_internal_assign_getarg(op, al); break;
   case JIT_CALL: skip = jit_internal_assign_call(op, al); break;
@@ -3519,8 +4045,8 @@ static void jit_internal_assign_regs(struct jit * jit, struct jit_op * op)
  if (skip) return;
  for (i = 0; i < 3; i++) {
   if (((((op)->spec >> ((i + 1) - 1) * 2) & 0x03) == 0x01) || ((((op)->spec >> ((i + 1) - 1) * 2) & 0x03) == 0x03)) {
-   jit_reg virt_reg = JIT_REG(op->arg[i]);
-   if (virt_reg.spec == (2)) jit_internal_associate_register_alias(al, op, i);
+   jit_reg virt_reg = (jit_reg) op->arg[i];
+   if ((((virt_reg) >> 1) & 0x03) == (2)) jit_internal_associate_register_alias(al, op, i);
    else jit_internal_associate_register(al, op, i);
   } else if ((((op)->spec >> ((i + 1) - 1) * 2) & 0x03) == 0x02) {
    op->r_arg[i] = op->arg[i];
@@ -3571,8 +4097,11 @@ void jit_collect_statistics(struct jit * jit)
    }
    new_hint->refs = 0;
    new_hint->last_pos = ops_from_return;
+   if ((((jit_opcode) (op->code & 0xfff8)) == JIT_RETVAL) || (((jit_opcode) (op->code & 0xfff8)) == JIT_RET))
+    new_hint->should_be_eax++;
    new_hints = jit_tree_insert(new_hints, reg, new_hint, NULL);
   }
+  if (((jit_opcode) (op->code & 0xfff8)) == JIT_CALL) jit_internal_mark_calleesaved_regs(new_hints, op);
   jit_internal_hints_refcount_inc(new_hints);
   op->allocator_hints = new_hints;
   if (((jit_opcode) (op->code & 0xfff8)) == JIT_PROLOG) {
@@ -3614,7 +4143,7 @@ static inline void jit_internal_branch_adjustment(struct jit * jit, jit_op * op)
  if (!jit_internal_is_cond_branch_op(op)) return;
  jit_rmap * cur_regmap = op->regmap;
  jit_rmap * tgt_regmap = op->jmp_addr->regmap;
- if (!jit_internal_rmap_equal(op, cur_regmap, tgt_regmap)) {
+ if (!jit_internal_rmap_subset(op, tgt_regmap->map, cur_regmap->map)) {
   switch (((jit_opcode) (op->code & 0xfff8))) {
    case JIT_BEQ: op->code = JIT_BNE | (op->code & 0x7); break;
    case JIT_BGT: op->code = JIT_BLE | (op->code & 0x7); break;
@@ -3679,7 +4208,7 @@ int jit_reg_in_use(jit_op * op, int reg, int fp)
  && ((jit_set_get(op->live_in, virt_reg) || (jit_set_get(op->live_out, virt_reg))))) return 1;
  else return 0;
 }
-jit_hw_reg * jit_get_unused_reg(struct jit_reg_allocator * al, jit_op * op, int fp)
+jit_hw_reg * jit_get_unused_reg_with_index(struct jit_reg_allocator * al, jit_op * op, int fp, int index)
 {
  jit_hw_reg * regs;
  int reg_count;
@@ -3690,9 +4219,18 @@ jit_hw_reg * jit_get_unused_reg(struct jit_reg_allocator * al, jit_op * op, int 
   regs = al->fp_regs;
   reg_count = al->fp_reg_cnt;
  }
- for (int i = 0; i < reg_count; i++)
-  if (!jit_reg_in_use(op, regs[i].id, fp)) return &(regs[i]);
+ for (int i = 0; i < reg_count; i++) {
+  if (regs[i].callee_saved) continue;
+  if (!jit_reg_in_use(op, regs[i].id, fp)) {
+   if (index == 0) return &(regs[i]);
+   else index--;
+  }
+ }
  return NULL;
+}
+jit_hw_reg * jit_get_unused_reg(struct jit_reg_allocator * al, jit_op * op, int fp)
+{
+ return jit_get_unused_reg_with_index(al, op, fp, 0);
 }
 struct jit_op * jit_add_op(struct jit * jit, unsigned short code, unsigned char spec, long arg1, long arg2, long arg3, unsigned char arg_size, struct jit_debug_info *debug_info)
 {
@@ -3725,9 +4263,10 @@ struct jit * jit_init()
  r->last_op = r->ops;
  r->optimizations = 0;
  r->buf = NULL;
+ r->mmaped_buf = 0;
  r->labels = NULL;
  r->reg_al = jit_reg_allocator_create();
- jit_enable_optimization(r, (0x04) | (0x01));
+ jit_enable_optimization(r, (0x04) | (0x01) | (0x08));
  return r;
 }
 jit_op *jit_add_prolog(struct jit * jit, void * func, struct jit_debug_info *debug_info)
@@ -3751,11 +4290,11 @@ jit_label * jit_get_label(struct jit * jit)
         jit->labels = r;
         return r;
 }
-static int jit_imm_overflow(struct jit * jit, int signed_op, long value)
+static int jit_imm_overflow(struct jit *jit, jit_op *op, long value)
 {
- unsigned long mask = ~((1UL << (12)) - 1);
+ unsigned long mask = ~((1UL << (31)) - 1);
  unsigned long high_bits = value & mask;
- if (signed_op) {
+ if ((!(op->code & 0x04))) {
   if ((high_bits != 0) && (high_bits != mask)) return 1;
  } else {
   if (high_bits != 0) return 1;
@@ -3784,14 +4323,14 @@ static void jit_correct_long_imms(struct jit * jit)
   for (int i = 1; i < 4; i++)
    if ((((op)->spec >> ((i) - 1) * 2) & 0x03) == 0x02) imm_arg = i - 1;
   long value = op->arg[imm_arg];
-  if (jit_imm_overflow(jit, (!(op->code & 0x04)), value)) {
-   jit_op * newop = jit_op_new(JIT_MOV | 0x02, (((0x00) << 4) | ((0x02) << 2) | (0x03)), (jit_mkreg((0), (1), 0)), value, 0, (sizeof(void *)));
+  if (jit_imm_overflow(jit, op, value)) {
+   jit_op * newop = jit_op_new(JIT_MOV | 0x02, (((0x00) << 4) | ((0x02) << 2) | (0x03)), (((((0)) & 0x01) | ((((1)) & 0x03) << 1) | ((0) & 0xfffffff) << 4)), value, 0, (sizeof(void *)));
    jit_op_prepend(op, newop);
    op->code &= ~(0x3);
    op->code |= 0x01;
    op->spec &= ~(0x3 << (2 * imm_arg));
    op->spec |= (0x01 << (2 * imm_arg));
-   op->arg[imm_arg] = (jit_mkreg((0), (1), 0));
+   op->arg[imm_arg] = (((((0)) & 0x01) | ((((1)) & 0x03) << 1) | ((0) & 0xfffffff) << 4));
   }
  }
 }
@@ -3809,7 +4348,7 @@ static inline void jit_correct_float_imms(struct jit * jit)
   int imm_arg;
   for (int i = 1; i < 4; i++)
    if ((((op)->spec >> ((i) - 1) * 2) & 0x03) == 0x02) imm_arg = i - 1;
-  jit_op * newop = jit_op_new(JIT_FMOV | 0x02, (((0x00) << 4) | ((0x02) << 2) | (0x03)), (jit_value) (jit_mkreg((1), (1), 0)), 0, 0, 0);
+  jit_op * newop = jit_op_new(JIT_FMOV | 0x02, (((0x00) << 4) | ((0x02) << 2) | (0x03)), (jit_value) (((((1)) & 0x01) | ((((1)) & 0x03) << 1) | ((0) & 0xfffffff) << 4)), 0, 0, 0);
   newop->fp = 1;
   newop->flt_imm = op->flt_imm;
   jit_op_prepend(op, newop);
@@ -3817,7 +4356,7 @@ static inline void jit_correct_float_imms(struct jit * jit)
   op->code |= 0x01;
   op->spec &= ~(0x3 << (2 * imm_arg));
   op->spec |= (0x01 << (2 * imm_arg));
-  op->arg[imm_arg] = (jit_mkreg((1), (1), 0));
+  op->arg[imm_arg] = (((((1)) & 0x01) | ((((1)) & 0x03) << 1) | ((0) & 0xfffffff) << 4));
  }
 }
 static inline void jit_expand_patches_and_labels(struct jit * jit)
@@ -3853,6 +4392,7 @@ static inline void jit_prepare_reg_counts(struct jit * jit)
     info->fp_reg_count = last_fp + 1;
     info->general_arg_cnt = gp_args;
     info->float_arg_cnt = fp_args;
+    while ((info->gp_reg_count + info->fp_reg_count) % 2) info->gp_reg_count ++;
     info->args = malloc(sizeof(struct jit_inp_arg) * declared_args);
    }
    if (op) {
@@ -3867,9 +4407,9 @@ static inline void jit_prepare_reg_counts(struct jit * jit)
   }
   for (int i = 0; i < 3; i++)
    if (((((op)->spec >> ((i + 1) - 1) * 2) & 0x03) == 0x03) || ((((op)->spec >> ((i + 1) - 1) * 2) & 0x03) == 0x01)) {
-    jit_reg r = JIT_REG(op->arg[i]);
-    if ((r.type == (0)) && (r.id > last_gp)) last_gp = r.id;
-    if ((r.type == (1)) && (r.id > last_fp)) last_fp = r.id;
+    jit_reg r = (jit_reg) op->arg[i];
+    if ((((r) & 0x01) == (0)) && ((((r) >> 4) & 0xfffffff) > last_gp)) last_gp = (((r) >> 4) & 0xfffffff);
+    if ((((r) & 0x01) == (1)) && ((((r) >> 4) & 0xfffffff) > last_fp)) last_fp = (((r) >> 4) & 0xfffffff);
    }
   if (((jit_opcode) (op->code & 0xfff8)) == JIT_DECL_ARG) {
    declared_args++;
@@ -3954,11 +4494,21 @@ void jit_generate_code(struct jit * jit)
  jit_prepare_reg_counts(jit);
  jit_prepare_arguments(jit);
  jit_prepare_spills_on_jmpr_targets(jit);
- jit_dead_code_analysis(jit, 1);
+ if (jit->optimizations & (0x08)) {
+  jit_dead_code_analysis(jit, 1);
+ }
  jit_flw_analysis(jit);
  if (jit->optimizations & (0x02)) jit_optimize_unused_assignments(jit);
+ int change = 0;
+ jit_optimize_st_ops(jit);
+ if (jit->optimizations & (0x04)) {
+  change |= jit_optimize_join_addmul(jit);
+  change |= jit_optimize_join_addimm(jit);
+ }
+ if (change) jit_flw_analysis(jit);
  jit_collect_statistics(jit);
  jit_assign_regs(jit);
+ if (jit->optimizations & (0x01)) jit_optimize_frame_ptr(jit);
  jit->buf_capacity = (4096);
  jit->buf = malloc(jit->buf_capacity);
  jit->ip = jit->buf;
@@ -3967,6 +4517,10 @@ void jit_generate_code(struct jit * jit)
   unsigned long offset_1 = (jit->ip - jit->buf);
   switch (((jit_opcode) (op->code & 0xfff8))) {
    case JIT_DATA_BYTE: *(jit->ip)++ = (unsigned char) op->arg[0]; break;
+   case JIT_DATA_BYTES:
+    for (int i = 0; i < op->arg[0]; i++)
+     *(jit->ip)++ = *(((unsigned char *) op->addendum) + i);
+    break;
    case JIT_DATA_REF_CODE:
    case JIT_DATA_REF_DATA:
     op->patch_addr = ((jit_value)jit->ip - (jit_value)jit->buf);
@@ -3978,6 +4532,8 @@ void jit_generate_code(struct jit * jit)
    case JIT_FORCE_SPILL:
    case JIT_FORCE_ASSOC:
    case JIT_COMMENT:
+   case JIT_MARK:
+   case JIT_TOUCH:
     break;
    default: jit_gen_op(jit, op);
   }
@@ -3986,14 +4542,14 @@ void jit_generate_code(struct jit * jit)
   op->code_length = offset_2 - offset_1;
  }
  int code_size = jit->ip - jit->buf;
- void * mem;
- posix_memalign(&mem, sysconf(_SC_PAGE_SIZE), code_size);
- mprotect(mem, code_size, PROT_READ | PROT_EXEC | PROT_WRITE);
+ void *mem = mmap(NULL, jit->buf_capacity, PROT_READ | PROT_EXEC | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+ if (mem == MAP_FAILED) perror("mmap");
  memcpy(mem, jit->buf, code_size);
  free(jit->buf);
  long pos = jit->ip - jit->buf;
  jit->buf = mem;
  jit->ip = jit->buf + pos;
+ jit->mmaped_buf = 1;
  jit_patch_external_calls(jit);
  jit_patch_local_addrs(jit);
  for (jit_op * op = jit_op_first(jit->ops); op != NULL; op = op->next) {
@@ -4003,12 +4559,21 @@ void jit_generate_code(struct jit * jit)
 }
 void jit_trace(struct jit *jit, int verbosity)
 {
- printf("jit_trace is not supported on this architecture\n");
+ for (jit_op *op = jit_op_first(jit->ops)->next; op != NULL; op = op->next) {
+  if (((jit_opcode) (op->code & 0xfff8)) == JIT_PROLOG) continue;
+  if (((jit_opcode) (op->code & 0xfff8)) == JIT_DATA_BYTE) continue;
+  if (((jit_opcode) (op->code & 0xfff8)) == JIT_DATA_REF_CODE) continue;
+  if (((jit_opcode) (op->code & 0xfff8)) == JIT_DATA_REF_DATA) continue;
+  jit_op * o = jit_op_new(JIT_TRACE, (((0x00) << 4) | ((0x00) << 2) | (0x02)), verbosity, 0, 0, 0);
+  o->r_arg[0] = o->arg[0];
+  jit_op_prepend(op, o);
+ }
 }
 static void jit_internal_free_ops(struct jit_op * op)
 {
  if (op == NULL) return;
  jit_internal_free_ops(op->next);
+ if (op->addendum) free(op->addendum);
  jit_free_op(op);
 }
 static void jit_internal_free_labels(jit_label * lab)
@@ -4040,12 +4605,23 @@ void jit_free(struct jit * jit)
  jit_reg_allocator_free(jit->reg_al);
  jit_internal_free_ops(jit_op_first(jit->ops));
  jit_internal_free_labels(jit->labels);
- if (jit->buf) free(jit->buf);
+ if (jit->buf) {
+  if (jit->mmaped_buf) munmap(jit->buf, jit->buf_capacity);
+  else free(jit->buf);
+ }
  free(jit);
+}
+int jit_regs_active_count(jit_op *op)
+{
+ return jit_set_size(op->live_out);
+}
+void jit_regs_active(jit_op *op, jit_value *dest)
+{
+ jit_set_to_array(op->live_out, dest);
 }
 void jit_message(struct jit * j, char * s) {
   jit_add_op(j, JIT_MSG | 0x02, (((0x00) << 4) | ((0x00) << 2) | (0x02)), (jit_value)(s), 0, 0, 0, jit_debug_info_new("head.c", __func__, 19));
 }
 void jit_messager(struct jit * j, char * s, int i) {
-  jit_add_op(j, JIT_MSG | 0x01, (((0x00) << 4) | ((0x01) << 2) | (0x02)), (jit_value)(s), (jit_mkreg((0), (0), (i))), 0, 0, jit_debug_info_new("head.c", __func__, 23));
+  jit_add_op(j, JIT_MSG | 0x01, (((0x00) << 4) | ((0x01) << 2) | (0x02)), (jit_value)(s), (((((0)) & 0x01) | ((((0)) & 0x03) << 1) | (((i)) & 0xfffffff) << 4)), 0, 0, jit_debug_info_new("head.c", __func__, 23));
 }
