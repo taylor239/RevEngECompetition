@@ -52,6 +52,8 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	 */
 	protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException
 	{
+		EmailSender mySender = EmailSender.getEmailSender("revenge@cs.arizona.edu");
+		
 		HttpSession session = request.getSession(true);
 		TrafficAnalyzer accessor=TrafficAnalyzerPool.getAnalyzer();
 		if(!accessor.allowImage(request.getRemoteAddr()+"image"))
@@ -107,6 +109,8 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 		//response.getWriter().append("Served at: ").append(request.getContextPath());
 		
 		ArrayList curChallenge = myConnector.getChallenge(challengeName, (String)myUser.getAttribute("email"));
+		DBObj topChallenge = (DBObj)curChallenge.get(0);
+		String toEmail = "Your submission for " + challengeName + " was received on " + topChallenge.getAttribute("submissionTime") + ".  Your submission output is as follows:\n";
 		//System.out.println(((DBObj)curChallenge.get(0)).getAttributes());
 		myConnector.removeChallengeParticipantTests(challengeName, (String)myUser.getAttribute("email"));
 		
@@ -370,6 +374,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        			int numIterations = (int)previousMap.getAttribute("num_iterations");
 	        			int numFailures = 0;
 	        			int numPerformanceFailures = 0;
+	        			toEmail += "Testing " + numIterations + " values.";
 	        			redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Testing " + numIterations + " values." + " <br />\";</script>");
 	        			for(int y=0; y<1000; y++)
 	    	        	{
@@ -620,6 +625,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        			textToInsert += "performance.";
 	    	        		}
 	    	        	}
+	    	        	toEmail += textToInsert;
 	    	        	redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + textToInsert + " <br />\";</script>");
 	    	        	for(int y=0; y<1000; y++)
 	    	        	{
@@ -783,12 +789,14 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 			{
 				//response.sendRedirect("myChallenges.jsp");
 				//redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=myChallenges.jsp\" /></head></html>");
+				toEmail += "Done!";
 				redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Done!" + " <br />\";</script>");
 				redirectWriter.flush();
 				response.flushBuffer();
 			}
 			redirectWriter.flush();
 			response.flushBuffer();
+			mySender.sendEmail((String)myUser.getAttribute("email"), "Submission Received for " + challengeName, toEmail);
 		}
 		else
 		{

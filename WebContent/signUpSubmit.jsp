@@ -57,6 +57,7 @@
 				myConnector.assignChallenge(curName, newUserEmail);
 			}
 			messageText = "Thank you for signing up!  You may now use your account.";
+			mySender.sendEmail(newUserEmail, "Welcome to RevEngE!", "You have signed up for RevEngE---thank you for your participation!  Your username is " + newUserName + ".");
 		}
 		catch(Exception e)
 		{

@@ -28,6 +28,7 @@
 	//System.out.println("databasing");
 %>
 <%@include file="./databaseconfig.jsp" %>
+<%@include file="./emailconfig.jsp" %>
 <%
 	boolean authenticate=true;
 	if(authenticate)

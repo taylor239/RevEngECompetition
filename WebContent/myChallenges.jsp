@@ -214,7 +214,10 @@
         			|| tmp.equals("participantSeed")
         			|| tmp.equals("challenge_set_name")
         			|| tmp.equals("open_time")
-        			|| tmp.equals("end_time"))
+        			|| tmp.equals("end_time")
+        			|| tmp.equals("cachedOriginal")
+        			|| tmp.equals("cachedObfuscated")
+        			|| tmp.equals("cachedGrading"))
         	{
         		keys.remove(x);
         		x--;
@@ -597,7 +600,10 @@
             			|| tmp.equals("randomSeed")
             			|| tmp.equals("participantSeed")
             			|| tmp.equals("open_time")
-            			|| tmp.equals("end_time"))
+            			|| tmp.equals("end_time")
+            			|| tmp.equals("cachedOriginal")
+            			|| tmp.equals("cachedObfuscated")
+            			|| tmp.equals("cachedGrading"))
             	{
             		keys.remove(x);
             		x--;

@@ -2393,6 +2393,36 @@ public class DatabaseConnector
 	
 	/**
 	 * 
+	 * @param challengeName
+	 * @param originalFile
+	 * @param gradingFile
+	 * @param obfuscatedFile
+	 */
+	public synchronized void cacheChallengeCode(String challengeName, byte[] originalFile, byte[] gradingFile, byte[] obfuscatedFile)
+	{
+		String stmt="UPDATE `challenge` SET `cachedOriginal` = ?,  `cachedGrading` = ?, `cachedObfuscated` = ? WHERE `challenge`.`challenge_name` = ?";
+		try
+		{
+			getConnection();
+			PreparedStatement myStmt=connection.prepareStatement(stmt);
+			myStmt.setBytes(1, originalFile);
+			myStmt.setBytes(2, gradingFile);
+			myStmt.setBytes(3, obfuscatedFile);
+			myStmt.setString(4, challengeName);
+			myStmt.executeUpdate();
+			myStmt.close();
+		}
+		catch(Exception e)
+		{
+			e.printStackTrace();
+			disconnect();
+			return;
+		}
+		disconnect();
+	}
+	
+	/**
+	 * 
 	 * @param toUpdate
 	 */
 	public synchronized void challengeParticipantCodeSubmitted(String challengeName, String email, byte[] writeFile, byte[] codeFile)

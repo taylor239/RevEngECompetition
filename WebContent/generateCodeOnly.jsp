@@ -91,6 +91,8 @@
         
         boolean randSeed = (boolean)((DBObj)myChallengesFull.get(0)).getAttribute("randomSeed");
         
+		boolean isCached = false;
+        
         if(randSeed)
         {
         	Random rand = new SecureRandom();
@@ -99,7 +101,20 @@
         else
         {
         	seed = new Integer((String)((DBObj)myChallengesFull.get(0)).getAttribute("seed"));
+        	isCached = (((DBObj)myChallengesFull.get(0)).containsKey("cachedOriginal") && ((DBObj)myChallengesFull.get(0)).getAttribute("cachedOriginal") != null && ((DBObj)myChallengesFull.get(0)).getAttribute("cachedOriginal") instanceof byte[]);
         }
+        
+        System.out.println("Has cached files: " + isCached);
+        //System.out.println(((DBObj)myChallengesFull.get(0)).getAttribute("cachedOriginal"));
+        
+        if(isCached)
+        {
+        	ArrayList myChallenges = new ArrayList();
+            myChallenges.add(myChallengesFull.get(0));
+        	myConnector.challengeParticipantCodeWritten((String)((DBObj)myChallenges.get(0)).getAttribute("challenge_name"), (String)((DBObj)myChallenges.get(0)).getAttribute("email"), ((byte[])((DBObj)myChallengesFull.get(0)).getAttribute("cachedOriginal")), ((byte[])((DBObj)myChallengesFull.get(0)).getAttribute("cachedGrading")), ((byte[])((DBObj)myChallengesFull.get(0)).getAttribute("cachedObfuscated")), seed);
+        }
+        else
+        {
         
         boolean isCompiled = false;
         for(int x=0; x<myChallengesFull.size()+myChallengesEvaluation.size(); x++)
@@ -377,8 +392,16 @@
 	        }	
         }
         
+        
         //System.out.println(finalFile);
         //System.out.println(firstFile);
+        firstFile = "challenge_0.c";
+        
+        System.out.println();
+        System.out.println("Files and paths:");
+        
+        System.out.println(firstPath + "/" + finalFile);
+        System.out.println(finalPath + "/" + firstFile);
         
        	
         File finalFinalDone=new File(finalPath+"/"+finalFile);
@@ -431,7 +454,7 @@
         	e.printStackTrace();
         }
         
-        File gradingFileDone=new File(firstPath+"/"+"grading.c");
+        File gradingFileDone=new File(firstPath+"/"+firstFile);
         byte[] gradingFileData=new byte[(int)gradingFileDone.length()];
         try
         {
@@ -456,8 +479,12 @@
         ArrayList myChallenges = new ArrayList();
         myChallenges.add(myChallengesFull.get(0));
         myConnector.challengeParticipantCodeWritten((String)((DBObj)myChallenges.get(0)).getAttribute("challenge_name"), (String)((DBObj)myChallenges.get(0)).getAttribute("email"), firstFileData, gradingFileData, finalFileData, seed);
+        if(!randSeed)
+        {
+        	myConnector.cacheChallengeCode((String)((DBObj)myChallenges.get(0)).getAttribute("challenge_name"), firstFileData, gradingFileData, finalFileData);
+        }
         System.out.println("Seed was: " + seed);
         //String forwardURL = "viewChallenge.jsp?challengeName="+((DBObj)myChallenges.get(0)).getAttribute("challenge_name");
-        
+        }
         }
         %>
