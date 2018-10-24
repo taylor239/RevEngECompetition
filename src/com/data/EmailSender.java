@@ -58,6 +58,7 @@ public class EmailSender implements Runnable
 	
 	public void sendEmail(String recipient, String subject, String message)
 	{
+		message = message.replace("\n", "<br />");
 		HashMap toSend = new HashMap();
 		toSend.put("recipient", recipient);
 		toSend.put("subject", subject);
@@ -93,7 +94,7 @@ public class EmailSender implements Runnable
 					message.setFrom(new InternetAddress(myEmail));
 					message.addRecipient(Message.RecipientType.TO, new InternetAddress(((String)curSend.get("recipient"))));
 					message.setSubject((String)curSend.get("subject"));
-					message.setText((String)curSend.get("message"));
+					message.setText((String)curSend.get("message"), "utf-8", "html");
 					Transport.send(message);
 				}
 				workThread.sleep(10000);

@@ -625,7 +625,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        			textToInsert += "performance.";
 	    	        		}
 	    	        	}
-	    	        	toEmail += textToInsert;
+	    	        	toEmail += "\n" + textToInsert;
 	    	        	redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + textToInsert + " <br />\";</script>");
 	    	        	for(int y=0; y<1000; y++)
 	    	        	{
@@ -789,7 +789,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 			{
 				//response.sendRedirect("myChallenges.jsp");
 				//redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=myChallenges.jsp\" /></head></html>");
-				toEmail += "Done!";
+				toEmail += "\nDone!";
 				redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Done!" + " <br />\";</script>");
 				redirectWriter.flush();
 				response.flushBuffer();

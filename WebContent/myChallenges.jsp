@@ -332,10 +332,22 @@
 	        		//String passedTests = "" + ((DBObj)myChallenges.get(x)).getAttribute("auto_grade_score");
 	        		%>
 	        		var message_<%=x %> = '<table width="100%"><tr width="100%"><td colspan="2" width="100%" style="vertical-align:bottom;">Challenge Instructions:</td></tr><tr><td colspan="2" style="vertical-align:top;"><table style="width:100%;"><tr><td style="font-size:medium; font-weight:normal; text-align:left;"><%=((DBObj)myChallenges.get(x)).getAttribute("description") %></td></tr><tr><td colspan="2" style="font-size:medium; font-weight:normal; text-align:left;"><%=lastSubmission %></td></tr>' + <%
-						        		
+					
+	        		System.out.println("Is graded? " + isGraded);
+	        		System.out.println(((DBObj)myChallenges.get(x)).getAttribute("challenge_name"));
+	        		
 	        		if(isGraded)
 	        		{
 	        			Object testNums = ((DBObj)myChallenges.get(x)).getAttribute("test_number");
+	        			
+	        			System.out.println("Test nums " + testNums + ", " + testNums.getClass());
+	        			
+	        			if(testNums != null && testNums instanceof Integer)
+	        			{
+	        				ArrayList newTestNums = new ArrayList();
+	        				newTestNums.add(testNums);
+	        				testNums = newTestNums;
+	        			}
 	        			
 	        			if(testNums != null && testNums instanceof ArrayList)
 	        			{
