@@ -116,6 +116,11 @@
         else
         {
         
+        String initText = "#include <stdio.h>\n#include <time.h>\n#include <pthread.h>\n";
+        PrintWriter initWriter = new PrintWriter(emptyFile);
+        initWriter.println(initText);
+        initWriter.close();
+        	
         boolean isCompiled = false;
         for(int x=0; x<myChallengesFull.size()+myChallengesEvaluation.size(); x++)
         {
