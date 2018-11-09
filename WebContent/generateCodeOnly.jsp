@@ -189,7 +189,20 @@
 	        	//String command = ""+configCommands+""+"printenv\rls\rpwd\r";//./tigress "+((DBObj)myChallengesFull.get(x)).getAttribute("command")+" --out="+genDir.getAbsolutePath()+"/"+outputFile+" "+genDir.getAbsolutePath()+"/"+prevFile;
 	        	////System.out.println(command);
 	        	//String[] cmdArray = {"ps", "aux"};
-	        	String[] splitString = ((String)((DBObj)myChallengesFull.get(x)).getAttribute("command")).split(" ");
+	        	//String[] splitString = ((String)((DBObj)myChallengesFull.get(x)).getAttribute("command")).split(" ");
+	        	String totalString = (String)((DBObj)myChallengesFull.get(x)).getAttribute("command");
+	        	List<String> stringList = new ArrayList<String>();
+	        	java.util.regex.Matcher match = java.util.regex.Pattern.compile("(([^\"]\\S*(\".+?\")+)|([^\"]\\S*))\\s*").matcher(totalString);
+	        	while (match.find())
+	        	{
+	        		stringList.add(match.group(1).replaceAll("\"", ""));
+	        		System.out.println("Got string " + stringList.get(stringList.size()-1));
+	        	}
+	        	String[] splitString = {""};
+	        	if(stringList.size() > 0)
+	        	{
+	        		splitString = stringList.toArray(new String[stringList.size()]);
+	        	}
 	        	if(splitString[0].isEmpty())
 	        	{
 	        		splitString=new String[0];
@@ -232,9 +245,19 @@
 	        	}
 	        	
 	        	cmdArray[0] = curCommandName;
-	        	for(int y=0; y<splitString.length; y++)
+	        	if(cmdArray[0].equals("gcc"))
 	        	{
-	        		cmdArray[y+1]=splitString[y];
+	        		for(int y=0; y<splitString.length; y++)
+	        		{
+	        			cmdArray[y+3]=splitString[y];
+	        		}
+	        	}
+	        	else
+	        	{
+	        		for(int y=0; y<splitString.length; y++)
+	        		{
+	        			cmdArray[y+1]=splitString[y];
+	        		}
 	        	}
 	        	if(cmdArray[0].equals("./tigress"))
 	        	{
@@ -245,9 +268,9 @@
 	        	else if(cmdArray[0].equals("gcc"))
 	        	{
 	        		//outputFile = "./"+outputFile;
-	        		cmdArray[splitString.length+2]="-o"+outputFile;
+	        		cmdArray[2]="-o"+outputFile;
 	        		//cmdArray[splitString.length+3]=outputFile;
-		        	cmdArray[splitString.length+1]=prevFile;
+		        	cmdArray[1]=prevFile;
 		        	tmpFile=new File(genDir.getAbsolutePath());
 		        	//String weirdOutputFile="\\ "+outputFile;
 		        	//secondCmdArray[0]="mv";
