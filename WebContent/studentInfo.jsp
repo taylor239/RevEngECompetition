@@ -50,6 +50,29 @@
         
         <tr>
         <td colspan="2">
+        <b>&nbsp;</b>
+        </td>
+        </tr>
+        
+        <tr>
+        <td colspan="2">
+        <b>Quick Start</b>
+        </td>
+        </tr>
+        <tr>
+        <td colspan="2">
+        If you have already read all of the information below, you can follow these steps to get up and running:
+        <ul>
+        	<li>Download and configure your Debian variant (we test using Kali and Ubuntu, and these are the versions we support) virtual machine</li>
+        	<li>Once your VM is running, download and run with admin/sudo/root the following script: <a href="installDataCollection.sh" download>installDataCollection.sh</a></li>
+        	<li>With the data collection running, download and solve challenges</li>
+        	<li>Upload your challenge submissions, and when you do check the "Upload Collected Data" to submit your data (because this takes a while, you may want to do this only for your final submission)</li>
+        </ul>
+        </td>
+        </tr>
+        
+        <tr>
+        <td colspan="2">
         &nbsp;
         </td>
         </tr>
@@ -222,7 +245,7 @@
         </p>
         
         <p>
-        The second way to be awarded compensation requires the submission of a written document, as required for the "Limited Submission", but additionally requires the use and submission of data from our data collection software (as detailed on the Data Collection page).  If the software is used correctly and written document satisfactory, you will be awarded compensation for a "Full Submission", which consists of $500, $200, and $100, respectively, for the first, second, and third successful submissions to a medium difficulty problem, and $1000, $400, and $200, respectively, for the first, second, and third successful submissions to a hard difficulty problem.  Only unique solutions will be given an award; if another submission already employed the same methodology as a subsequent solution, the subsequent solution will not be considered successful.  The same researcher may be awarded multiple successful solutions, but must do so from different accounts and with different methodologies.
+        The second way to be awarded compensation requires the submission of a written document, as required for the "Limited Submission", but additionally requires the use and submission of data from our data collection software (as detailed on the Data Collection page).  If the software is used correctly and written document satisfactory, you will be awarded compensation for a "Full Submission", which consists of $500, $200, and $100, respectively, for the first, second, and third successful submissions to a medium difficulty problem, and $1000, $400, and $200, respectively, for the first, second, and third successful submissions to a hard difficulty problem.  Only unique solutions will be given an award; if another submission already employed the same methodology as a subsequent solution, the subsequent solution will not be considered successful.  The same researcher may be awarded multiple successful solutions, but must do so from different accounts and with different methodologies.  For Beta difficulty problems, a $100 prize is available for the first successful, full submission including data collection.
         </p>
         </tr>
         
@@ -257,7 +280,7 @@
         <tr>
         <td colspan="2">
         <p>
-        One of the primary functions of RevEngE&mdash;a University of Arizona Department of Computer Science research and education project headed by Clark Taylor and Christian Collberg&mdash;is to conduct research on what methods and tools are most effective in accomplishing the tasks listed above, particularly when various types of obfuscation are employed.  
+        One of the primary functions of RevEngE&mdash;a University of Arizona Department of Computer Science research and education project headed by Claire Taylor and Christian Collberg&mdash;is to conduct research on what methods and tools are most effective in accomplishing the tasks listed above, particularly when various types of obfuscation are employed.  
         </p>
         </td>
         </tr>
@@ -270,7 +293,7 @@
         
         <tr>
         <td colspan="2">
-        <b>Documents</b>
+        <b>Documents and Links</b>
         </td>
         </tr>
         <tr>
@@ -281,6 +304,7 @@
         	<li>The <a href="Students.pdf">consent form for students</a></li>
         	<li>The <a href="Professionals.pdf">consent document and information for professionals and everyone else</a></li>
         	<li>The <a href="approval.pdf">University of Arizona IRB approval letter</a> for this project</li>
+        	<li>The <a href="https://github.com/cgtboy1988/UserMonitor">Github respository</a> for the data collection software</li>
         </ul>
         </p>
         </td>

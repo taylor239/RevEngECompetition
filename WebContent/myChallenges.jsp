@@ -499,7 +499,9 @@
 	        <%
 	        if((Integer)((DBObj)myChallenges.get(x)).getAttribute("code_generated") == 0)
 	        {
-	        	request.getRequestDispatcher("generateCodeOnly.jsp?challengeName=" + ((DBObj)myChallenges.get(x)).getAttribute("challenge_name")).include(request, response);
+	        	CodeGenerator myGenerator = new CodeGenerator();
+	        	myGenerator.generateCode(myConnector, request, myUser, sc, ((String)((DBObj)myChallenges.get(x)).getAttribute("challenge_name")));
+	        	//request.getRequestDispatcher("generateCodeOnly.jsp?challengeName=" + ((DBObj)myChallenges.get(x)).getAttribute("challenge_name")).include(request, response);
 	        %>
 	        <a href="ChallengeObfuscatedFileServer?challengeName=<%= ((DBObj)myChallenges.get(x)).getAttribute("challenge_name") %>">
 	        Download

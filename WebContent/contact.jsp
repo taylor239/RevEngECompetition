@@ -57,7 +57,7 @@
         <table class="news_item_table">
         <tr>
         <td>
-        <p>This site was created and is administered by Clark Taylor, a PhD student at the University of Arizona who may be contacted via email at <a href="mailto:cgtboy1988@email.arizona.edu" target="_top">cgtboy1988@email.arizona.edu.</a></p><br /><p>Christian Collberg is Clark Taylor's faculty advisor and one of the contributors to the Tigress project.  He may be contacted at <a href="mailto:collberg@email.arizona.edu">collberg@email.arizona.edu.</a></p>
+        <p>This site was created and is administered by Claire Taylor, a PhD student at the University of Arizona who may be contacted via email at <a href="mailto:cgtboy1988@email.arizona.edu" target="_top">cgtboy1988@email.arizona.edu.</a></p><br /><p>Christian Collberg is Claire Taylor's faculty advisor and one of the contributors to the Tigress project.  He may be contacted at <a href="mailto:collberg@email.arizona.edu">collberg@email.arizona.edu.</a></p>
         </td>
         </tr>
         </table>
