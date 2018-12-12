@@ -500,20 +500,23 @@
 	        if((Integer)((DBObj)myChallenges.get(x)).getAttribute("code_generated") == 0)
 	        {
 	        	System.out.println("Generating challenge " + ((String)((DBObj)myChallenges.get(x)).getAttribute("challenge_name")));
-	        	CodeGenerator myGenerator = new CodeGenerator();
-	        	try
-	        	{
-	        		myGenerator.generateCode(myConnector, request, myUser, sc, ((String)((DBObj)myChallenges.get(x)).getAttribute("challenge_name")));
-	        	}
-	        	catch(Exception e)
-	        	{
-	        		e.printStackTrace();
-	        	}
+	        	//CodeGenerator myGenerator = new CodeGenerator();
+	        	//try
+	        	//{
+	        	//	myGenerator.generateCode(myConnector, request, myUser, sc, ((String)((DBObj)myChallenges.get(x)).getAttribute("challenge_name")));
+	        	//}
+	        	//catch(Exception e)
+	        	//{
+	        	//	e.printStackTrace();
+	        	//}
+	        	//System.out.println("Done generating challenge");
 	        	//request.getRequestDispatcher("generateCodeOnly.jsp?challengeName=" + ((DBObj)myChallenges.get(x)).getAttribute("challenge_name")).include(request, response);
+	        	CodeGeneratorPool curPool = CodeGeneratorPool.getInstance();
+	        	curPool.insertGeneration(myConnector, request, myUser, sc, ((String)((DBObj)myChallenges.get(x)).getAttribute("challenge_name")));
 	        %>
-	        <a href="ChallengeObfuscatedFileServer?challengeName=<%= ((DBObj)myChallenges.get(x)).getAttribute("challenge_name") %>">
-	        Download
-	        </a>
+	        
+	        Generating...
+	        
 	        <%
 	        }
 	        else
