@@ -1,6 +1,7 @@
 package com.data;
 
 import java.io.IOException;
+import java.util.UUID;
 
 import javax.servlet.ServletException;
 import javax.servlet.annotation.WebServlet;
@@ -62,7 +63,7 @@ public class InstallScriptServlet extends HttpServlet {
 		String serverName = "revenge.cs.arizona.edu";
 		String port = "80";
 		
-		String mariaPassword = "LFgVMrQ8rqR41StN";
+		String mariaPassword = UUID.randomUUID().toString();
 		
 		String output = "#!/bin/bash" 
 		+ "\nclear" 
@@ -119,6 +120,7 @@ public class InstallScriptServlet extends HttpServlet {
 		+ "\nsudo rm /var/cache/apt/archives/lock"
 		+ "\nsudo dpkg --configure -a" 
 		+ "\nsudo apt-get -y install default-jre" 
+		+ "\nsudo apt-get -y install mariadb-server" 
 		+ "\nsudo apt-get -y install tomcat8" 
 		//+ "\nsudo debconf-set-selections <<< 'mysql-server mysql-server/root_password password " + mySqlPassword + "'" 
 		//+ "\nsudo debconf-set-selections <<< 'mysql-server mysql-server/root_password_again password " + mySqlPassword + "'" 
