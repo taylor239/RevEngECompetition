@@ -414,7 +414,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        				{
 	    	        					Random tmpRand = new SecureRandom();
 	    	        					long tmpLong = tmpRand.nextLong();
-	    	        					while(tmpLong > Math.pow(10, x + 1) || -tmpLong > Math.pow(10, x + 1))
+	    	        					while(Math.abs(tmpLong) > Math.pow(10, x + 1))
 	    	        					{
 	    	        						tmpLong = tmpLong/2;
 	    	        					}
@@ -424,7 +424,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        				{
 	    	        					Random tmpRand = new SecureRandom();
 	    	        					int tmpInt = tmpRand.nextInt();
-	    	        					while(tmpInt > Math.pow(10, x + 1) || -tmpInt > Math.pow(10, x + 1))
+	    	        					while(Math.abs(tmpInt) > Math.pow(10, x + 1))
 	    	        					{
 	    	        						tmpInt = tmpInt/2;
 	    	        					}
@@ -767,7 +767,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        	String clean = nativeInterface.executeCommand(firejailClean, tmpFile, environmentalVars);
 	        	System.out.println("Cleaning..." + clean);
 	        	*/
-	        	FileUtils.deleteDirectory(genDir);
+	        	//FileUtils.deleteDirectory(genDir);
 			}
 			catch(Exception e)
 			{
