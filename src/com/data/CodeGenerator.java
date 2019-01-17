@@ -182,7 +182,7 @@ public class CodeGenerator
 	        	}
 	        	String[] cmdArray = new String[4+splitString.length];
 	        	String[] secondCmdArray = null;
-	        	if(((DBObj)myChallengesFull.get(x)).getAttribute("commandName").equals("gcc"))
+	        	if(((DBObj)myChallengesFull.get(x)).getAttribute("commandName").equals("gcc") || ((DBObj)myChallengesFull.get(x)).getAttribute("commandName").equals("clang-5.0"))
 	        	{
 	        		secondCmdArray = new String[3];
 	        		isCompiled=true;
@@ -204,7 +204,7 @@ public class CodeGenerator
 	        	//cmdArray[0]="./tigress";
 	        	String curCommandName=(String)((DBObj)myChallengesFull.get(x)).getAttribute("commandName");
 	        	
-	        	if(curCommandName.equals("gcc"))
+	        	if(curCommandName.equals("gcc") || curCommandName.equals("clang-5.0"))
 	        	{
 	        		cmdArray = new String[3+splitString.length];
 	        	}
@@ -218,7 +218,7 @@ public class CodeGenerator
 	        	}
 	        	
 	        	cmdArray[0] = curCommandName;
-	        	if(cmdArray[0].equals("gcc"))
+	        	if(cmdArray[0].equals("gcc") || cmdArray[0].equals("clang-5.0"))
 	        	{
 	        		for(int y=0; y<splitString.length; y++)
 	        		{
@@ -238,7 +238,7 @@ public class CodeGenerator
 		        	cmdArray[splitString.length+2]="--out="+genDir.getAbsolutePath()+"/"+outputFile;
 		        	cmdArray[splitString.length+3]=genDir.getAbsolutePath()+"/"+prevFile;
 	        	}
-	        	else if(cmdArray[0].equals("gcc"))
+	        	else if(cmdArray[0].equals("gcc") || cmdArray[0].equals("clang-5.0"))
 	        	{
 	        		//outputFile = "./"+outputFile;
 	        		cmdArray[2]="-o"+outputFile;
@@ -325,7 +325,7 @@ public class CodeGenerator
 	        		cmdArray = new String[1+splitString.length];
 	        	}
 	        	String[] secondCmdArray = null;
-	        	if(((DBObj)myChallengesEvaluation.get(z)).getAttribute("commandName").equals("gcc"))
+	        	if(((DBObj)myChallengesEvaluation.get(z)).getAttribute("commandName").equals("gcc") || ((DBObj)myChallengesEvaluation.get(z)).getAttribute("commandName").equals("clang-5.0"))
 	        	{
 	        		//secondCmdArray = new String[3];
 	        		isCompiled=true;
@@ -337,7 +337,7 @@ public class CodeGenerator
 	        	//cmdArray[0]="./tigress";
 	        	String curCommandName=(String)((DBObj)myChallengesFull.get(x)).getAttribute("commandName");
 	        	
-	        	if(curCommandName.equals("gcc"))
+	        	if(curCommandName.equals("gcc") || curCommandName.equals("clang-5.0"))
 	        	{
 	        		cmdArray = new String[3+splitString.length];
 	        	}
@@ -353,7 +353,7 @@ public class CodeGenerator
 		        	cmdArray[splitString.length+2]="--out="+genDir.getAbsolutePath()+"/"+outputFile;
 		        	cmdArray[splitString.length+3]=genDir.getAbsolutePath()+"/"+prevFile;
 	        	}
-	        	else if(cmdArray[0].equals("gcc"))
+	        	else if(cmdArray[0].equals("gcc") || cmdArray[0].equals("clang-5.0"))
 	        	{
 	        		//outputFile = "./"+outputFile;
 	        		cmdArray[splitString.length+2]="-o"+outputFile;

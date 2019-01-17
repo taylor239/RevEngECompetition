@@ -254,9 +254,9 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        	System.out.println(tmpFile.getAbsolutePath());
 	        	System.out.println(nativeOutput);
 	        	
-	        	//g++ -O3 sample_linked.s -o sample_linked.out
+	        	//clang-5.0 -O3 sample_linked.s -o sample_linked.out
 	        	compileCmdArray = new String[5];
-	        	compileCmdArray[0] = "g++";
+	        	compileCmdArray[0] = "clang-5.0";
 	        	compileCmdArray[1] = "-O3";
 	        	compileCmdArray[2] = genDir + "/grading_count_linked.s";
 	        	compileCmdArray[3] = "-o";
@@ -332,9 +332,9 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        	System.out.println(tmpFile.getAbsolutePath());
 	        	System.out.println(nativeOutput);
 	        	
-	        	//g++ sample_linked.s -o sample_linked.out
+	        	//clang-5.0 sample_linked.s -o sample_linked.out
 	        	compileCmdArray = new String[5];
-	        	compileCmdArray[0] = "g++";
+	        	compileCmdArray[0] = "clang-5.0";
 	        	compileCmdArray[1] = "-O3";
 	        	compileCmdArray[2] = genDir + "/submitted_count_linked.s";
 	        	compileCmdArray[3] = "-o";
