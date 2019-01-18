@@ -389,17 +389,17 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        				int numArgs = testArgs.size();
     	    	        	System.out.println("Testing with " + numArgs + " args.");
     	    	        	
-    	    	        	String[] runCmdArray = new String[numArgs + 6];
+    	    	        	String[] runCmdArray = new String[numArgs + 5];
     	    	        	
     	    	        	runCmdArray[0] = "firejail";
     	    	        	runCmdArray[1] = "--quiet";
     	    	        	//runCmdArray[2] = "--whitelist="+genDir+"/submitted.out";
     	    	        	//runCmdArray[3] = "--read-write="+genDir+"/submitted.out";
-    	    	        	runCmdArray[2] = "--noprofile";
+    	    	        	//runCmdArray[2] = "--noprofile";
     	    	        	//runCmdArray[3] = "--private";//=" + sc.getRealPath("/WEB-INF/");
     	    	        	//runCmdArray[4] = "--whitelist="+genDir+"/submitted.out";
-    	    	        	runCmdArray[4] = "--overlay";
-    	    	        	runCmdArray[3] = "--net=none";
+    	    	        	runCmdArray[3] = "--overlay-tmpfs";
+    	    	        	runCmdArray[2] = "--net=none";
     	    	        	//runCmdArray[3] = "--blacklist=/";
     	    	        	//runCmdArray[2] = "--noblacklist="+genDir+"/submitted.out";
 	        				for(int z=0; z<testArgs.size(); z++)
@@ -414,7 +414,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        				{
 	    	        					Random tmpRand = new SecureRandom();
 	    	        					long tmpLong = tmpRand.nextLong();
-	    	        					while(Math.abs(tmpLong) > Math.pow(10, x + 1))
+	    	        					while(Math.abs(tmpLong) > Math.pow(10, y + 1))
 	    	        					{
 	    	        						tmpLong = tmpLong/2;
 	    	        					}
@@ -424,16 +424,16 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        				{
 	    	        					Random tmpRand = new SecureRandom();
 	    	        					int tmpInt = tmpRand.nextInt();
-	    	        					while(Math.abs(tmpInt) > Math.pow(10, x + 1))
+	    	        					while(Math.abs(tmpInt) > Math.pow(10, y + 1))
 	    	        					{
 	    	        						tmpInt = tmpInt/2;
 	    	        					}
 	    	        					value = ((Integer)tmpInt).toString();
 	    	        				}
 	    	        			}
-	    	        			runCmdArray[6+z] = value;
+	    	        			runCmdArray[5+z] = value;
 	        				}
-	        				runCmdArray[5] = genDir+"/grading.out";
+	        				runCmdArray[4] = genDir+"/grading.out";
 	    	        		
 	    	        		String argString = "Running grading with: ";
 	    	        		for(int z=0; z<runCmdArray.length; z++)
@@ -454,7 +454,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        		
 	    	        		String gradingOutput = nativeInterface.executeCommand(runCmdArray, tmpFile, environmentalVars, 500000000, outputForce);
 	    	        		
-	    	        		runCmdArray[5] = genDir+"/submitted.out";
+	    	        		runCmdArray[4] = genDir+"/submitted.out";
 	    	        		String submittedOutput = nativeInterface.executeCommand(runCmdArray, tmpFile, environmentalVars, 500000000, outputForce);
 	    	        		
 	    	        		//System.out.println(gradingOutput);
