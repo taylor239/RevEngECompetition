@@ -63,7 +63,7 @@ public class InstallScriptServlet extends HttpServlet {
 		String serverName = "revenge.cs.arizona.edu";
 		String port = "80";
 		
-		String mariaPassword = "uBgiDDGhndviQeEZ";
+		String mariaPassword = "LFgVMrQ8rqR41StN";
 		
 		String output = "#!/bin/bash" 
 		+ "\nclear" 
