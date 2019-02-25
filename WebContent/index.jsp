@@ -90,7 +90,7 @@
         <table class="news_item_table">
         <tr>
         <td>
-        <p>This is RevEngE the Tigress Reverse Engineering <b>Competition</b> Engine.  The purpose of this web application is to generate difficult to solve reverse engineering problems, and study how individuals complete these problems in order to study reverse engineering and obfuscation.  In short, we provide cash prizes for individuals able to solve these problems; we study the methods employed to solve these problems through our data collection metrics.</p><br />
+        <p>This is RevEngE the Tigress Reverse Engineering <b>Competition</b> Engine, built by Claire Taylor at the University of Arizona for her PhD dissertation research.  The purpose of this web application is to generate difficult to solve reverse engineering problems, and study how individuals complete these problems in order to study reverse engineering and obfuscation.  In short, we provide cash prizes for individuals able to solve these problems; we study the methods employed to solve these problems through our data collection metrics.  The longer story is that which obfuscations work well is relatively unknown at this point in time, as are the best ways to reverse engineer these transforms.  Using RevEngE, Claire Taylor and her mentor Christian Collberg aim to gain an empirical understanding of both of these things.  This allows analysis of how well obfuscation is going to work to protect against Man-at-the-End attacks. It is also informative for those seeking to conduct those attacks.</p><br />
         <p>Please see the <a href="studentInfo.jsp">information page</a> to learn how to participate.</p>
         </td>
         </tr>
