@@ -397,7 +397,7 @@ public class DatabaseConnector
 		ConcurrentHashMap attributes=new ConcurrentHashMap();
 		try
 		{
-			PreparedStatement myStmt=connection.prepareStatement("SELECT COUNT(*) AS 'count' FROM `auto_grade_tests_default` WHERE `challenge_name` = ?");
+			PreparedStatement myStmt=connection.prepareStatement("SELECT COUNT(*) AS 'count' FROM `auto_grade_tests` WHERE `challenge_name` = ?");
 			myStmt.setString(1, testname);
 			ResultSet myResults=myStmt.executeQuery();
 			//disconnect();

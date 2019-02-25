@@ -33,18 +33,18 @@
 	        	String numIterations = (String)request.getParameter("iterations_" + x);
 	        	String performance = (String)request.getParameter("performance_" + x);
 	        	int numArgs = new Integer((String)request.getParameter("num_args_" + x));
-	        	myConnector.addGradeDefault(challengeName, x + curTestCount, numIterations, performance, (String)myUser.getAttribute("email"));
+	        	myConnector.addGradeTest(challengeName, x + curTestCount, numIterations, performance);
 	        	for(int y=0; y<=numArgs; y++)
 	        	{
 	        		String curType = (String)request.getParameter("arg_type_" + x + "_" + y);
 	        		if(curType.equals("literal"))
 	        		{
 	        			String curValue = (String)request.getParameter("arg_value_" + x + "_" + y);
-	        			myConnector.addGradeDefaultArg(challengeName, x + curTestCount, y, curType, curValue, (String)myUser.getAttribute("email"));
+	        			myConnector.addGradeTestArg(challengeName, x + curTestCount, y, curType, curValue);
 	        		}
 	        		else
 	        		{
-	        			myConnector.addGradeDefaultArg(challengeName, x + curTestCount, y, curType, (String)myUser.getAttribute("email"));
+	        			myConnector.addGradeTestArg(challengeName, x + curTestCount, y, curType);
 	        		}
 	        	}
 	        }
