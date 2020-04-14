@@ -47,7 +47,16 @@ public class DownloadSubmission extends HttpServlet {
 			myConnector=new DatabaseConnector("pillar");
 			session.setAttribute("connector", myConnector);
 		}
-		User myUser=(User)session.getAttribute("user");
+		
+		User myUser = null;
+		
+		if(request.getParameter("email")!=null && request.getParameter("password")!=null)
+		{
+			myUser=myConnector.signIn(request.getParameter("email"), request.getParameter("password"), request.getRemoteAddr());
+			session.setAttribute("user", myUser);
+		}
+		
+		myUser=(User)session.getAttribute("user");
 		
 		String studentEmail = (String)request.getParameter("email");
 		

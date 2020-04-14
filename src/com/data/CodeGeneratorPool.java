@@ -38,7 +38,7 @@ public class CodeGeneratorPool
 		}
 	}
 	
-	public synchronized void insertGeneration(DatabaseConnector myConnector, HttpServletRequest request, DBObj myUser, ServletContext sc, String challengeName)
+	public synchronized void insertGeneration(DatabaseConnector myConnector, DBObj myUser, ServletContext sc, String challengeName)
 	{
 		System.out.println("Queue size " + generatorQueue.size());
 		String userID = (String)myUser.getAttribute("email");
@@ -54,7 +54,6 @@ public class CodeGeneratorPool
 				userMap.put(challengeName, 1);
 				HashMap toDoMap = new HashMap();
 				toDoMap.put("myConnector", myConnector);
-				toDoMap.put("request", request);
 				toDoMap.put("myUser", myUser);
 				toDoMap.put("sc", sc);
 				toDoMap.put("challengeName", challengeName);
@@ -68,7 +67,6 @@ public class CodeGeneratorPool
 			queueMap.put(userID, userMap);
 			HashMap toDoMap = new HashMap();
 			toDoMap.put("myConnector", myConnector);
-			toDoMap.put("request", request);
 			toDoMap.put("myUser", myUser);
 			toDoMap.put("sc", sc);
 			toDoMap.put("challengeName", challengeName);
@@ -169,7 +167,7 @@ public class CodeGeneratorPool
 					try
 					{
 						System.out.println(Thread.currentThread() + " is generating " + curWork.values());
-						myGenerator.generateCode((DatabaseConnector)curWork.get("myConnector"), (HttpServletRequest)curWork.get("request"), (DBObj)curWork.get("myUser"), (ServletContext)curWork.get("sc"), (String)curWork.get("challengeName"));
+						myGenerator.generateCode((DatabaseConnector)curWork.get("myConnector"), (DBObj)curWork.get("myUser"), (ServletContext)curWork.get("sc"), (String)curWork.get("challengeName"));
 					}
 					catch (Exception e)
 					{

@@ -1,3 +1,8 @@
+/* 
+   This file should no longer be necessary.
+   Include tigress.h instead.
+*/
+
 #ifdef __APPLE__
 /*                                                                                         
    CIL does not handle this:

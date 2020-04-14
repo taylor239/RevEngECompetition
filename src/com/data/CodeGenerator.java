@@ -23,7 +23,7 @@ public class CodeGenerator
 		
 	}
 	
-	public void generateCode(DatabaseConnector myConnector, HttpServletRequest request, DBObj myUser, ServletContext sc, String challengeName) throws Exception
+	public void generateCode(DatabaseConnector myConnector, DBObj myUser, ServletContext sc, String challengeName) throws Exception
 	{
 		ArrayList myChallengesFull = myConnector.getChallenge(challengeName, (String)myUser.getAttribute("email"));
         ArrayList myChallengesEvaluation = myConnector.getChallengeEvaluation(challengeName, (String)myUser.getAttribute("email"));

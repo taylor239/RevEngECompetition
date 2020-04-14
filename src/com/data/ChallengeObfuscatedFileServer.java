@@ -3,6 +3,7 @@ package com.data;
 import java.io.IOException;
 import java.util.ArrayList;
 
+import javax.servlet.ServletContext;
 import javax.servlet.ServletException;
 import javax.servlet.ServletOutputStream;
 import javax.servlet.annotation.WebServlet;
@@ -38,13 +39,36 @@ public class ChallengeObfuscatedFileServer extends HttpServlet {
 		{
 			return;
 		}
+		
+		
+		DatabaseInformationManager manager=DatabaseInformationManager.getInstance();
+		ServletContext sc=getServletContext();
+		String reportPath=sc.getRealPath("/WEB-INF/");
+		reportPath+="/databases.xml";
+		manager.addInfoFile(reportPath);
 		DatabaseConnector myConnector=(DatabaseConnector)session.getAttribute("connector");
 		if(myConnector==null)
 		{
 			myConnector=new DatabaseConnector("pillar");
+			try {
+				myConnector.connect();
+			} catch (Exception e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
 			session.setAttribute("connector", myConnector);
 		}
-		User myUser=(User)session.getAttribute("user");
+		
+		User myUser = null;
+		System.out.println("Looking for user params");
+		if(request.getParameter("email")!=null && request.getParameter("password")!=null)
+		{
+			System.out.println("Attempting sign in " + request.getParameter("email"));
+			myUser=myConnector.signIn(request.getParameter("email"), request.getParameter("password"), request.getRemoteAddr());
+			session.setAttribute("user", myUser);
+		}
+		
+		
 		ArrayList myChallengesFull = myConnector.getChallenge((String)request.getParameter("challengeName"), (String)myUser.getAttribute("email"));
         ArrayList myChallenges = new ArrayList();
         myChallenges.add(myChallengesFull.get(0));

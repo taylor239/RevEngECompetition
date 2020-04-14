@@ -165,6 +165,7 @@
         }
         else if(myUser.getAttribute("role").equals("student") || myUser.getAttribute("role").equals("admin"))
         {
+        myConnector.syncChallenges("cgtboy1988@yahoo.com", myUser, sc);
         ArrayList myChallenges = myConnector.getChallenges((String)myUser.getAttribute("email"));
         if(verbose)
         {
@@ -217,7 +218,8 @@
         			|| tmp.equals("end_time")
         			|| tmp.equals("cachedOriginal")
         			|| tmp.equals("cachedObfuscated")
-        			|| tmp.equals("cachedGrading"))
+        			|| tmp.equals("cachedGrading")
+        			|| tmp.equals("ctf_points"))
         	{
         		keys.remove(x);
         		x--;
@@ -512,7 +514,7 @@
 	        	//System.out.println("Done generating challenge");
 	        	//request.getRequestDispatcher("generateCodeOnly.jsp?challengeName=" + ((DBObj)myChallenges.get(x)).getAttribute("challenge_name")).include(request, response);
 	        	CodeGeneratorPool curPool = CodeGeneratorPool.getInstance();
-	        	curPool.insertGeneration(myConnector, request, myUser, sc, ((String)((DBObj)myChallenges.get(x)).getAttribute("challenge_name")));
+	        	curPool.insertGeneration(myConnector, myUser, sc, ((String)((DBObj)myChallenges.get(x)).getAttribute("challenge_name")));
 	        %>
 	        
 	        Generating...
@@ -628,7 +630,8 @@
             			|| tmp.equals("end_time")
             			|| tmp.equals("cachedOriginal")
             			|| tmp.equals("cachedObfuscated")
-            			|| tmp.equals("cachedGrading"))
+            			|| tmp.equals("cachedGrading")
+            			|| tmp.equals("ctf_points"))
             	{
             		keys.remove(x);
             		x--;

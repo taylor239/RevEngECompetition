@@ -27,5 +27,17 @@
 	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/mysql-connector-java-5.0.8-bin.jar"/>
 	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/pop3.jar"/>
 	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/smtp.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-javadoc.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-sources.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-test-sources.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-tests.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-logging-1.2-javadoc.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-logging-1.2.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-javadoc.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-sources.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-test-sources.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-tests.jar"/>
+	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2.jar"/>
 	<classpathentry kind="output" path="build/classes"/>
 </classpath>

@@ -1,6 +1,6 @@
 <databaselist>
-<database id="jdbc:mysql://localhost:3306/tigress_challenge_competition">
-	<address>jdbc:mysql://localhost:3306/tigress_challenge_competition</address>
+<database id="jdbc:mysql://localhost:3306/tigress_challenge_competition?autoReconnect=true">
+	<address>jdbc:mysql://localhost:3306/tigress_challenge_competition?autoReconnect=true</address>
 	<username>pillar</username>
 	<password>e6Zpf3vDL44GuVcv</password>
 	<driver>com.mysql.jdbc.Driver</driver>

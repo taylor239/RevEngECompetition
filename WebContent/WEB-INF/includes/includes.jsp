@@ -27,6 +27,7 @@
 	}
 	//System.out.println("databasing");
 %>
+<%@include file="./hostURL.jsp" %>
 <%@include file="./databaseconfig.jsp" %>
 <%@include file="./emailconfig.jsp" %>
 <%

@@ -60,16 +60,40 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 		{
 			return;
 		}
+		
+		DatabaseInformationManager manager=DatabaseInformationManager.getInstance();
+		ServletContext sc=getServletContext();
+		String reportPath=sc.getRealPath("/WEB-INF/");
+		reportPath+="/databases.xml";
+		manager.addInfoFile(reportPath);
 		DatabaseConnector myConnector=(DatabaseConnector)session.getAttribute("connector");
 		if(myConnector==null)
 		{
 			myConnector=new DatabaseConnector("pillar");
+			try {
+				myConnector.connect();
+			} catch (Exception e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
 			session.setAttribute("connector", myConnector);
 		}
-		User myUser=(User)session.getAttribute("user");
+		
+		User myUser = null;
+		System.out.println("Looking for user params");
+		if(request.getParameter("email")!=null && request.getParameter("password")!=null)
+		{
+			System.out.println("Attempting sign in " + request.getParameter("email"));
+			myUser=myConnector.signIn(request.getParameter("email"), request.getParameter("password"), request.getRemoteAddr());
+			session.setAttribute("user", myUser);
+		}
+		
+		myUser=(User)session.getAttribute("user");
 		
 		
 		String challengeName = (request.getParameter("challengeName"));
+		
+		String redirectTo = (request.getParameter("redirect"));
 		
 		String uploadData = "no";
 		if(request.getParameterMap().containsKey("uploadData"))
@@ -128,7 +152,7 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 			ArrayList gradeChallenge = myConnector.getChallengeAutoGrade(challengeName);
 			//System.out.println(((DBObj)gradeChallenge.get(0)).getAttributes());
 			ServerManager nativeInterface = ServerManager.getInstance();
-			ServletContext sc=getServletContext();
+			//ServletContext sc=getServletContext();
 			try
 			{
 				byte[] challengeMD5Bytes=challengeName.getBytes();
@@ -781,7 +805,14 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 			{
 				//response.sendRedirect("activateDataUpload.jsp");
 				redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Done!  Beginning data upload." + " <br />\";</script>");
-				redirectWriter.println("<meta http-equiv=\"refresh\" content=\"2; url=activateDataUpload.jsp\" />");
+				if(redirectTo == null || redirectTo.equals(""))
+				{
+					redirectWriter.println("<meta http-equiv=\"refresh\" content=\"2; url=activateDataUpload.jsp\" />");
+				}
+				else
+				{
+					redirectWriter.println("<meta http-equiv=\"refresh\" content=\"2; url=activateDataUpload.jsp?redirect=" + redirectTo + "\" />");
+				}
 				redirectWriter.flush();
 				response.flushBuffer();
 			}
@@ -791,6 +822,11 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 				//redirectWriter.println("<html><head><meta http-equiv=\"refresh\" content=\"2; url=myChallenges.jsp\" /></head></html>");
 				toEmail += "\nDone!";
 				redirectWriter.println("<script>document.getElementById(\"gradeContent\").innerHTML += \"" + "Done!" + " <br />\";</script>");
+				if(redirectTo != null && (!redirectTo.equals("")))
+				{
+					redirectWriter.println("<meta http-equiv=\"refresh\" content=\"2; url=" + redirectTo + "\" />");
+				}
+				
 				redirectWriter.flush();
 				response.flushBuffer();
 			}

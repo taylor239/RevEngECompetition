@@ -1,7 +1,4 @@
-
-// Uncomment this if you're on Darwin. "apple.h" is in the 
-// Tigress distribution package.
-#include "apple.h"
+#include "tigress.h"
 
 #include <stdio.h>
 #include <stdlib.h>
