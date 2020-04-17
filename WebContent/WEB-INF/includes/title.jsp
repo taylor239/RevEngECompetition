@@ -125,6 +125,9 @@
 		  out.print("Login");
 	  }
 	  %></td>
+	  <td class="top_button" onclick="window.document.location='./ctf/RevEngE_CTF_splash.html';" onMouseOver="highlight(this)" onMouseOut="unhighlight(this)">
+      RevEngE CTF
+      </td>
     </tr>
   </table>
   </div>

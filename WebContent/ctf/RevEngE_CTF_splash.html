@@ -1696,7 +1696,16 @@ function unhighlightTitle(item)
 <script>
 
 	jsonSource = "../"
-
+	
+	function formatDate(timestamp)
+	{
+		t = timestamp.split(/[- :]/)
+		//+7 because we run on Arizona time
+		d = new Date(Date.UTC(t[0], t[1]-1, t[2], t[3] + 7, t[4], t[5]))
+		return d
+	}
+	
+	
 	function setupCTFs(curCTFs)
 	{
 		ctfDiv = document.getElementById("scheduleDiv")
@@ -1704,11 +1713,15 @@ function unhighlightTitle(item)
 		{
 			ctfTitle = document.createElement("p")
 			ctfDiv.appendChild(ctfTitle)
-			ctfTitle.innerHTML = "<b>" + ctf + "</b>"
+			ctfTitle.innerHTML = "<a href=\"RevEngE_CTF.html\">" + "<b>" + ctf + "</b>" + "</a>"
 			
 			ctfDates = document.createElement("p")
 			ctfDiv.appendChild(ctfDates)
-			ctfDates.innerHTML = curCTFs[ctf]["open_date"] + "-" + curCTFs[ctf]["close_date"]
+			openDate = curCTFs[ctf]["open_date"]
+			closeDate = curCTFs[ctf]["close_date"]
+			ctfDates.innerHTML = formatDate(openDate) + "<br \> until <br \>" + formatDate(closeDate)
+			//ctfDates.innerHTML = openDate + "<br \> until <br \>" + closeDate
+
 			
 			ctfDesc = document.createElement("p")
 			ctfDiv.appendChild(ctfDesc)
@@ -1811,8 +1824,14 @@ function unhighlightTitle(item)
 		be used in my PhD work.
 		</p><br>
 		<p>
-		The first challenge will go public on [DATE]. <a href="mailto:claire.g.taylor.1988@gmail.com">Email me</a> to receive updates
-		on upcoming events.
+		This work is detailed in our recent paper, <a href="http://malwareconference.org/index.php/en/2019-malware-conference-proceedings/2019-malware-conference/session-3-un-packers-reverse-engineering-and-other-musings/getting-revenge-a-system-for-analyzing-reverse-engineering-behavior/detail">
+		Getting RevEngE: A System for Analyzing Reverse Engineering Behavior</a>
+		</p><br>
+		<p>
+		After you sign up and want to begin participating, remember to also
+		install the data collection software!  This should ideally be done in
+		a virtual machine so I do not record you entering sensitive passwords.
+		More information and detailed instructions are available <a href="RevEngE_CTF_rules.html">here</a>.
 		</p><br>
         </td>
 		<td width="5%">
@@ -1833,7 +1852,7 @@ function unhighlightTitle(item)
     	</tr>
 		<tr class="title_list">
         <td colspan="3" align="center">
-        <a href="RevEngE_CTF.html">Enter</a>
+        <a href="RevEngE_CTF.html">Challenges</a>
         </td>
     	</tr>
 		<tr class="title_list">

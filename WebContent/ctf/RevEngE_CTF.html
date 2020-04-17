@@ -1685,7 +1685,7 @@ function unhighlightTitle(item)
 		
 		newRow = contentTable.insertRow(-1)
 		newCell = newRow.insertCell(0)
-		newCell.innerHTML = "<p>If you have not yet downloaded and installed the data collection script, please do so by downloading and running this script: <a href=\"RevEngE_CTF_rules.html\">setup.sh</a>.  You are not eligable for prize money if you do not run this script.  More information may be found <a href=\"http://revenge.cs.arizona.edu/RevEngECompetition/studentInfo.jsp\">here.</a>  Note that you will have to be logged in to download the correct install script.</p><br>"
+		newCell.innerHTML = "<p>If you have not yet downloaded and installed the data collection script, please do so by downloading and running this script: <a href=\"" + jsonSource + "installDataCollection.sh?" + "email=" + myUser["name"] + "&password=" + myUser["password"] + "\" id=\"setupLink\" download=\"setup.sh\">setup.sh</a>.  You are not eligible for prize money if you do not run this script.  More information may be found <a href=\"RevEngE_CTF_rules.html\">here.</a>  Note that you will have to be logged in to download the correct install script.</p><br>"
 		
 		console.log(myChallenges)
 		
@@ -1790,7 +1790,7 @@ function unhighlightTitle(item)
 			
 			newRow = contentTable.insertRow(-1)
 			newCell = newRow.insertCell(0)
-			newCell.innerHTML = "<br><p>If you do not yet have an account, please see the <a href=\"RevEngE_CTF_rules.html\">information page</a> to learn how to participate.</p>"
+			newCell.innerHTML = "<br><p>If you do not yet have an account, please see the <a href=\"RevEngE_CTF_rules.html\">information page</a> to learn how to participate.  Click <a href=\"RevEngE_CTF_signup.html\">here</a> to create an account.</p>"
 		}
 		else
 		{
@@ -1870,7 +1870,7 @@ function unhighlightTitle(item)
     <tbody><tr>
       <td class="top_button" onclick="window.document.location=&#39;RevEngE_CTF_splash.html&#39;;" onmouseover="highlight(this)" onmouseout="unhighlight(this)" style="background: none; cursor: none;"><!-- <img height="60em" src="img/tigress-gray.png" />-->Home</td>
       <td class="top_button" onclick="window.document.location=&#39;RevEngE_CTF.html&#39;;" onmouseover="highlight(this)" onmouseout="unhighlight(this)" style="background: none; cursor: none;">
-      Enter
+      Challenges
       </td>
       
       <td class="top_button" onclick="window.document.location=&#39;RevEngE_CTF_rules.html&#39;;" onmouseover="highlight(this)" onmouseout="unhighlight(this)" style="background: none; cursor: none;">

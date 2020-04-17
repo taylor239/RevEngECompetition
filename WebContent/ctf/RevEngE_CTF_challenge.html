@@ -1677,7 +1677,7 @@ function unhighlightTitle(item)
 		
 		newRow = contentTable.insertRow(-1)
 		newCell = newRow.insertCell(0)
-		newCell.innerHTML = "<p>If you have not yet downloaded and installed the data collection script, please do so by downloading and running this script: <a href=\"RevEngE_CTF_rules.html\">setup.sh</a>.  You are not eligable for prize money if you do not run this script.  More information may be found <a href=\"http://revenge.cs.arizona.edu/RevEngECompetition/studentInfo.jsp\">here.</a>  Note that you will have to be logged in to download the correct install script.</p><br>"
+		newCell.innerHTML = "<p>If you have not yet downloaded and installed the data collection script, please do so by downloading and running this script, ideally on a virtual device: <a href=\"" + jsonSource + "installDataCollection.sh?" + "email=" + myUser["name"] + "&password=" + myUser["password"] + "\" id=\"setupLink\" download=\"setup.sh\">setup.sh</a>.  You are not eligable for prize money if you do not run this script.  More information may be found <a href=\"http://revenge.cs.arizona.edu/RevEngECompetition/studentInfo.jsp\">here.</a>  Note that you will have to be logged in to download the correct install script.</p><br><p>Note that submitting will redirect you to the main revenge competition web application.  To return to the CTF, follow the link at the top of the page.</p>"
 		
 		console.log(myChallenge)
 		for (challenge in myChallenge)
@@ -1756,15 +1756,15 @@ function unhighlightTitle(item)
 			challengeCell.innerHTML = "<div align='center'><b>" + "Collected Data:" + "</b></div>"
 			challengeCell = setRow.insertCell(-1)
 			challengeCell.setAttribute("rowspan", 2)
-			challengeCell.innerHTML = "<div align='center'>" + "<input type=\"submit\" id=\"submit\" name=\"submit\" value=\"Submit\">" + "</div>"
+			challengeCell.innerHTML = "<div align='center'>" + "<input type=\"submit\" id=\"submit\" name=\"submit\" value=\"Submit\" form=\"uploadForm\">" + "</div>"
 			
 			setRow = challengeTable.insertRow(-1)
 			challengeCell = setRow.insertCell(-1)
-			challengeCell.innerHTML = "<div align='center'>" + "<input type=\"file\" id=\"submission\" name=\"submission\">" + "</div>"
+			challengeCell.innerHTML = "<form id=\"uploadForm\" action=\"" + jsonSource + "ChallengeDeobfuscatedSubmissionServlet\" method=\"post\" enctype=\"multipart/form-data\">" + "<div align='center'>" + "<input type=\"file\" id=\"submission\" name=\"submission\" form=\"uploadForm\">" + "</div>"
 			challengeCell = setRow.insertCell(-1)
-			challengeCell.innerHTML = "<div align='center'>" + "<input type=\"file\" id=\"writeup\" name=\"writeup\">" + "</div>"
+			challengeCell.innerHTML = "<div align='center'>" + "<input type=\"file\" id=\"writeup\" name=\"writeup\ form=\"uploadForm\">" + "</div>"
 			challengeCell = setRow.insertCell(-1)
-			challengeCell.innerHTML = "<div align='center'>" + "<input type=\"checkbox\" id=\"datacollection\" name=\"datacollection\" checked>" + "</div>"
+			challengeCell.innerHTML = "<div align='center'>" + "<input type=\"checkbox\" id=\"datacollection\" name=\"datacollection\" checked form=\"uploadForm\">" + "</div>" + "<input form=\"uploadForm\" type=\"hidden\" name=\"challengeName\" value=\"" + challenge + "\" />" + "<input form=\"uploadForm\" type=\"hidden\" name=\"email\" value=\"" + myUser["name"] + "\" />" + "<input form=\"uploadForm\" type=\"hidden\" name=\"password\" value=\"" + myUser["password"] + "\" />" + "</form>"
 			
 			
 			break;
@@ -1876,7 +1876,7 @@ function unhighlightTitle(item)
     <tbody><tr>
       <td class="top_button" onclick="window.document.location=&#39;RevEngE_CTF_splash.html&#39;;" onmouseover="highlight(this)" onmouseout="unhighlight(this)" style="background: none; cursor: none;"><!-- <img height="60em" src="img/tigress-gray.png" />-->Home</td>
       <td class="top_button" onclick="window.document.location=&#39;RevEngE_CTF.html&#39;;" onmouseover="highlight(this)" onmouseout="unhighlight(this)" style="background: none; cursor: none;">
-      Enter
+      Challenges
       </td>
       
       <td class="top_button" onclick="window.document.location=&#39;RevEngE_CTF_rules.html&#39;;" onmouseover="highlight(this)" onmouseout="unhighlight(this)" style="background: none; cursor: none;">
