@@ -10,6 +10,8 @@
 
 <body>
 <%
+	String redirectURL = "http://revenge.cs.arizona.edu/RevEngECompetition/monitorUpload.jsp";
+	
 	boolean foundOK = false;
 	String myNewToken = "";
 	Gson myGson = new Gson();
@@ -55,7 +57,7 @@
 	}
 %>
 
-<meta http-equiv="refresh" content="0; url=http://localhost:8080/CybercraftDataCollectionConnector/ActivateDataCollection?username=<%=myUser.getAttribute("email") %>&token=<%=myNewToken %>&server=http://<%=redirectServer + ":" + request.getServerPort() %>/DataCollectorServer/UploadData&event=<%=eventName %>&redirect=http://<%=redirectServer + ":" + request.getServerPort() %><%=request.getContextPath() %>/monitorUpload.jsp" />
+<meta http-equiv="refresh" content="0; url=http://localhost:8080/CybercraftDataCollectionConnector/ActivateDataCollection?username=<%=myUser.getAttribute("email") %>&token=<%=myNewToken %>&server=http://<%=redirectServer + ":" + request.getServerPort() %>/DataCollectorServer/UploadData&event=<%=eventName %>&redirect=<%=redirectServer %>" />
 </body>
 
 </html>
