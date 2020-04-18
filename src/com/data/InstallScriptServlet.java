@@ -173,9 +173,9 @@ public class InstallScriptServlet extends HttpServlet {
 + "\n" 
 + "\ntee /opt/dataCollector/DataCollectorStart.sh > /dev/null <<'EOF'" 
 + "\n#!/bin/bash" 
-+ "\nservice mysql start" 
-+ "\nservice tomcat8 start"
-+ "\nservice tomcat9 start"
+//+ "\nservice mysql start" 
+//+ "\nservice tomcat8 start"
+//+ "\nservice tomcat9 start"
 + "\nwhile true;" 
 + "\ndo" 
 + "\npkill -f \"/usr/bin/java -jar -XX:+IgnoreUnrecognizedVMOptions /opt/dataCollector/DataCollector.jar\"" 
@@ -194,8 +194,9 @@ public class InstallScriptServlet extends HttpServlet {
 + "\n" 
 + "\n# Launch script" 
 + "\n" 
-+ "\nmkdir ~/.config/autostart/"
-+ "\ntee ~/.config/autostart/DataCollector.desktop > /dev/null <<'EOF'" 
++ "\nLOG_NAME=$(logname)" 
++ "\nmkdir /home/$LOG_NAME/.config/autostart/"
++ "\ntee /home/$LOG_NAME/.config/autostart/DataCollector.desktop > /dev/null <<'EOF'" 
 + "\n[Desktop Entry]" 
 + "\nType=Application" 
 + "\nExec=\"/opt/dataCollector/DataCollectorStart.sh\"" 
@@ -208,11 +209,12 @@ public class InstallScriptServlet extends HttpServlet {
 + "\nComment=Collects data" 
 + "\nEOF" 
 + "\n" 
-+ "\nservice mysql start" 
-+ "\nservice tomcat8 start"
-+ "\nservice tomcat9 start"
+//+ "\nservice mysql start" 
+//+ "\nservice tomcat8 start"
+//+ "\nservice tomcat9 start"
 + "\n"
-+ "\n/opt/dataCollector/DataCollectorStart.sh & disown" ;
+//+ "\n/opt/dataCollector/DataCollectorStart.sh & disown" ;
++ "\nreboot" ;
 		
 		
 		/*
