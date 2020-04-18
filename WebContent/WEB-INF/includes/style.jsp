@@ -457,7 +457,7 @@ input[type=button]:hover
 	font-size:x-large;
 	align:center;
 	text-align:center;
-	width:20%;
+	width:16.666666%;
 	color:#FFF;
 	////border-radius:5px;
 	//padding:4px 4px !important;

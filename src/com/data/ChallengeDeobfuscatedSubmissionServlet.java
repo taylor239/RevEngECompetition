@@ -216,8 +216,14 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        	{
 	        		FileUtils.writeByteArrayToFile(new File(genDir + "/grading.c"), (byte[])((DBObj)curChallenge.get(0)).getAttribute("originalFile"));
 	        	}
-	        	FileUtils.writeByteArrayToFile(new File(genDir + "/submitted.c"), (byte[])((DBObj)curChallenge.get(0)).getAttribute("submittedFile"));
-	        	
+	        	if(((DBObj)curChallenge.get(0)).getAttribute("submittedFile") instanceof String)
+	        	{
+	        		FileUtils.writeStringToFile(new File(genDir + "/submitted.c"), (String)((DBObj)curChallenge.get(0)).getAttribute("submittedFile"));
+	        	}
+	        	else
+	        	{
+	        		FileUtils.writeByteArrayToFile(new File(genDir + "/submitted.c"), (byte[])((DBObj)curChallenge.get(0)).getAttribute("submittedFile"));
+	        	}
 	        	
 	        	
 	        	String[] compileCmdArray;// = new String[3];

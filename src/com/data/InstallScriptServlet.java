@@ -85,6 +85,8 @@ public class InstallScriptServlet extends HttpServlet {
 		String serverName = "revenge.cs.arizona.edu";
 		String port = "80";
 		
+		int screenshotTime = 60000;
+		
 		String mariaPassword = "LFgVMrQ8rqR41StN";;
 		
 		String output = "#!/bin/bash" 
@@ -144,10 +146,76 @@ public class InstallScriptServlet extends HttpServlet {
 		+ "\nsudo apt-get -y install default-jre" 
 		+ "\nsudo apt-get -y install mariadb-server" 
 		+ "\nsudo apt-get -y install tomcat8" 
+		+ "\nsudo apt-get -y install tomcat9" 
 		//+ "\nsudo debconf-set-selections <<< 'mysql-server mysql-server/root_password password " + mySqlPassword + "'" 
 		//+ "\nsudo debconf-set-selections <<< 'mysql-server mysql-server/root_password_again password " + mySqlPassword + "'" 
 		//+ "\nsudo apt-get -y install mysql-server" 
 		//+ "\nsudo apt-get -y install mysql-client" 
+		
++ "\n\nservice mysql start"
++ "\nmkdir -p /opt/dataCollector/" 
++ "\n\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/dataCollection.sql -O /opt/dataCollector/dataCollection.sql"
++ "\n\nmariadb -u root < /opt/dataCollector/dataCollection.sql"
++ "\nmariadb -u root -e \"CREATE USER 'dataCollector'@'localhost' IDENTIFIED BY '" + mariaPassword + "';\""
++ "\nmariadb -u root -e \"GRANT USAGE ON *.* TO 'dataCollector'@'localhost' REQUIRE NONE WITH MAX_QUERIES_PER_HOUR 0 MAX_CONNECTIONS_PER_HOUR 0 MAX_UPDATES_PER_HOUR 0 MAX_USER_CONNECTIONS 0;\""
++ "\nmariadb -u root -e \"GRANT ALL PRIVILEGES ON dataCollection.* TO 'dataCollector'@'localhost';\""
++ "\n"
++ "\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/CybercraftDataCollectionConnector.war -O /var/lib/tomcat8/webapps/CybercraftDataCollectionConnector.war"
++ "\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/CybercraftDataCollectionConnector.war -O /var/lib/tomcat9/webapps/CybercraftDataCollectionConnector.war"
++ "\n"
++ "\n# Copy jar to install dir" 
++ "\n" 
++ "\n#mv ./DataCollector.jar /opt/dataCollector/" 
++ "\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/DataCollector.jar -O /opt/dataCollector/DataCollector.jar" 
++ "\nchmod +777 /opt/dataCollector/DataCollector.jar" 
++ "\nchmod +x /opt/dataCollector/DataCollector.jar" 
++ "\n" 
++ "\n" 
++ "\ntee /opt/dataCollector/DataCollectorStart.sh > /dev/null <<'EOF'" 
++ "\n#!/bin/bash" 
++ "\nservice mysql start" 
++ "\nservice tomcat8 start"
++ "\nservice tomcat9 start"
++ "\nwhile true;" 
++ "\ndo" 
++ "\npkill -f \"/usr/bin/java -jar -XX:+IgnoreUnrecognizedVMOptions /opt/dataCollector/DataCollector.jar\"" 
+//+ "\n/usr/bin/java -Xmx1536m -jar /opt/dataCollector/DataCollector.jar -user " + curEmail + " -server " + serverName + ":" + port + " -event " + curEvent + " -continuous "+ myNewToken + " http://revenge.cs.arizona.edu/DataCollectorServer/UploadData" + " >> /opt/dataCollector/log.log 2>&1" 
++ "\n/usr/bin/java -Xmx1536m -jar -XX:+IgnoreUnrecognizedVMOptions /opt/dataCollector/DataCollector.jar -user " + curEmail + " -server " + serverName + ":" + port + " -event RevEngECompetition -screenshot " + screenshotTime + " >> /opt/dataCollector/log.log 2>&1" 
++ "\necho \"Got a crash: $(date)\" >> /opt/dataCollector/log.log" 
++ "\nsleep 2" 
++ "\ndone" 
++ "\nEOF" 
++ "\n" 
++ "\nchmod +777 /opt/dataCollector/DataCollectorStart.sh" 
++ "\nchmod +x /opt/dataCollector/DataCollectorStart.sh" 
++ "\n" 
++ "\ntouch /opt/dataCollector/log.log" 
++ "\nchmod +777 /opt/dataCollector/log.log" 
++ "\n" 
++ "\n# Launch script" 
++ "\n" 
++ "\nmkdir ~/.config/autostart/"
++ "\ntee ~/.config/autostart/DataCollector.desktop > /dev/null <<'EOF'" 
++ "\n[Desktop Entry]" 
++ "\nType=Application" 
++ "\nExec=\"/opt/dataCollector/DataCollectorStart.sh\"" 
++ "\nHidden=false" 
++ "\nNoDisplay=false" 
++ "\nX-GNOME-Autostart-enabled=true" 
++ "\nName[en_IN]=DataCollector" 
++ "\nName=DataCollector" 
++ "\nComment[en_IN]=Collects data" 
++ "\nComment=Collects data" 
++ "\nEOF" 
++ "\n" 
++ "\nservice mysql start" 
++ "\nservice tomcat8 start"
++ "\nservice tomcat9 start"
++ "\n"
++ "\n/opt/dataCollector/DataCollectorStart.sh & disown" ;
+		
+		
+		/*
 		+ "\n\nservice mysql start"
 		+ "\nmkdir -p /opt/dataCollector/" 
 		+ "\n\nwget http://" + serverName + ":" + port + "/DataCollectorServer/endpointSoftware/dataCollection.sql -O /opt/dataCollector/dataCollection.sql"
@@ -204,7 +272,7 @@ public class InstallScriptServlet extends HttpServlet {
 		+ "\nservice mysql start" 
 		+ "\nservice tomcat8 start"
 		+ "\n"
-		+ "\n/opt/dataCollector/DataCollectorStart.sh & disown" ;
+		+ "\n/opt/dataCollector/DataCollectorStart.sh & disown" ;*/
 		response.getWriter().append(output);
 	}
 

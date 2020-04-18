@@ -1758,7 +1758,7 @@ function unhighlightTitle(item)
 
 		<br><p>While the main RevEngE system hosts ongoing difficult problems, we also have periodic CTF-style events with graduated problem difficulties. Subjects can participate in these events and compete with other reverse engineers. As an incentive, we  provide cash prizes for the teams with the top scores!</p>
 
-		<br><p>Below are the rules followed by an events calendar.</p>
+		<br><p>Below are the rules.</p>
 		
 		<br><br>
 
@@ -1778,6 +1778,20 @@ function unhighlightTitle(item)
 
 		<br><p>Each challenge has an associated score representing the difficulty level we anticipate for that challenge. A subject’s score for solving a challenge is either 100% of the challenge in the case of right/wrong submissions (such as is the case for removing a password check) or a percent of the challenge score based on how well the solution performs in testing. The type of scoring will be listed per event and per challenge as appropriate.</p>
 		
+		<br><p>Unless otherwise noted, scoring for all problems is as follows:</p>
+		
+		<br>
+		
+		<ul>
+        	<li>When you upload your submission, it is stored in the RevEngE Competition database.</li>
+        	<li>If the submission is a source code submission (ie, you submitted a .c file) then it is compiled and run with random cases and/or cases developed for that particular challenge.</li>
+        	<li>The results are compared to the original (non obfuscated) file to determine if they are likely functionally correct.</li>
+        	<li>Your submission is compared to the original (non obfuscated) file in the number of instructions executed in running these cases.</li>
+        	<li>The instructions counted are high level, LLVM instructions to ensure independence from operating system and hardware variables.</li>
+        	<li>If the submission executes functionally identically to the original according to our tests and operates within a performance threshold (generally within a factor of 2 instructions, but could vary depending on challenge) of the original, then it is considered possibly correct.</li>
+        	<li>If a submission is possibly correct, then we will manually evaluate it for credit following the close of the competition.  This evaluation includes, but is not limited to, control flow comparisons and manual cases.</li>
+        </ul>
+		
 		<br><br>
 
 		<p><b>Challenge Progression</p></b>
@@ -1794,9 +1808,24 @@ function unhighlightTitle(item)
 		
 		<br><p>Once you sign up for an account, you may login to the CTF engine by clicking the <a href="RevEngE_CTF.html">Challenges</a> link.  Once logged in, your problems will appear.  If they do not, the system may be generating copies of the problems for you, in which case refreshing after a minute should make more problems appear.  Click on a problem to see what you need to do!</p>
 		
-		<br><br>Once you have an account, follow these steps use the data collection software:
-		
 		<br><br>
+		
+		<p><b>Data Collection</p></b>
+		
+		<br><p>RevEngE utilizes a custom data collection software to monitor users as they solve challenges.  This generates a data set that we intend to mine to derive and evaluate modern reverse engineering methods.  We highly recommend installing the software on a virtual device so that we do not see things like entering passwords on sensitive websites.  The software collects these pieces of data:</p>
+		
+		<br>
+		
+		<ul>
+        	<li>Screenshots</li>
+        	<li>Mouse and keyboard input</li>
+        	<li>Running processes</li>
+        	<li>Active window information</li>
+        </ul>
+		
+		<br><p>Once you have an account, follow these steps use the data collection software:</p>
+		
+		<br>
 		
 		<ul>
         	<li>Download and configure your Debian variant (we test using Kali and Ubuntu, and these are the versions we support) virtual machine</li>
