@@ -520,7 +520,11 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        						String nextLine = tmpScanner.nextLine();
 	    	        						Scanner lineScanner = new Scanner(nextLine);
 	    	        						String instructionType = lineScanner.next();
-	    	        						int count = lineScanner.nextInt();
+	    	        						int count = Integer.MAX_VALUE;
+	    	        						if(lineScanner.hasNextInt())
+	    	        						{
+		    	        						count = lineScanner.nextInt();
+	    	        						}
 	    	        						instructionType = instructionType.replace(":", "");
 	    	        						//System.out.println(instructionType + ", " + count);
 	    	        						gradingPerformance.put(instructionType, count);

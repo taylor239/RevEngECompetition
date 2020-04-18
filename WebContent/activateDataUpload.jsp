@@ -18,11 +18,16 @@
 	{
 		while(!foundOK)
 		{
+			System.out.println("1");
 			myNewToken = UUID.randomUUID().toString();
 			String verifierURL = "http://localhost:8080/DataCollectorServer/TokenStatus?username=" + myUser.getAttribute("email") + "&token=" + myNewToken + "&verifier=for_revenge&event=" + eventName;
+			System.out.println("2");
 			URL myURL = new URL(verifierURL);
+			System.out.println("3");
 			InputStream in = myURL.openStream();
+			System.out.println("4");
 			String reply = org.apache.commons.io.IOUtils.toString(in);
+			System.out.println("5");
 			org.apache.commons.io.IOUtils.closeQuietly(in);
 			System.out.println(reply);
 			HashMap replyMap = myGson.fromJson(reply, HashMap.class);
