@@ -49,15 +49,20 @@
 	{
 		e.printStackTrace();
 	}
-	String redirectServer = "revenge.cs.arizona.edu";
+	String dataServer = "http://revenge.cs.arizona.edu/DataCollectorServer/UploadData";
 	String urlRedirect = (String)session.getAttribute("redirect");
 	if(urlRedirect != null && !urlRedirect.equals(""))
 	{
 		//redirectServer = urlRedirect;
 	}
+	
+	String encodedUser = URLEncoder.encode((String)myUser.getAttribute("email"), "UTF-8");
+	dataServer = URLEncoder.encode(dataServer, "UTF-8");
+	eventName = URLEncoder.encode(eventName, "UTF-8");
+	redirectURL = URLEncoder.encode(redirectURL, "UTF-8");
 %>
 
-<meta http-equiv="refresh" content="0; url=http://localhost:8080/CybercraftDataCollectionConnector/ActivateDataCollection?username=<%=myUser.getAttribute("email") %>&token=<%=myNewToken %>&server=http://<%=redirectServer + ":" + request.getServerPort() %>/DataCollectorServer/UploadData&event=<%=eventName %>&redirect=<%=redirectServer %>" />
+<meta http-equiv="refresh" content="0; url=http://localhost:8080/CybercraftDataCollectionConnector/ActivateDataCollection?username=<%=encodedUser %>&token=<%=myNewToken %>&server=<%=dataServer %>&event=<%=eventName %>&redirect=<%=redirectURL %>" />
 </body>
 
 </html>
