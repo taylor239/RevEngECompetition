@@ -1701,7 +1701,7 @@ function unhighlightTitle(item)
 	{
 		t = timestamp.split(/[- :]/)
 		//+7 because we run on Arizona time
-		d = new Date(Date.UTC(t[0], t[1]-1, t[2], t[3] + 7, t[4], t[5]))
+		d = new Date(Date.UTC(t[0], t[1]-1, t[2], parseInt(t[3]) + 7, t[4], t[5]))
 		return d
 	}
 	
