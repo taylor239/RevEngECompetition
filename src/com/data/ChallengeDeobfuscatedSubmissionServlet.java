@@ -225,162 +225,201 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        		FileUtils.writeByteArrayToFile(new File(genDir + "/submitted.c"), (byte[])((DBObj)curChallenge.get(0)).getAttribute("submittedFile"));
 	        	}
 	        	
+	        	boolean isCompiledSubmission = false;
+	        	
+	        	System.out.println(((DBObj)curChallenge.get(0)).getAttributeNames());
+	        	
+	        	if(((int)((DBObj)curChallenge.get(0)).getAttribute("is_compiled")) == 1)
+	        	{
+	        		isCompiledSubmission = true;
+	        		if(((DBObj)curChallenge.get(0)).getAttribute("submittedFile") instanceof String)
+		        	{
+	        			File genFile = new File(genDir + "/submitted.out");
+	        			genFile.setExecutable(true, true);
+		        		FileUtils.writeStringToFile(genFile, (String)((DBObj)curChallenge.get(0)).getAttribute("submittedFile"));
+		        	}
+		        	else
+		        	{
+		        		File genFile = new File(genDir + "/submitted.out");
+		        		genFile.setExecutable(true, true);
+		        		FileUtils.writeByteArrayToFile(genFile, (byte[])((DBObj)curChallenge.get(0)).getAttribute("submittedFile"));
+		        	}
+	        	}
+	        	
 	        	
 	        	String[] compileCmdArray;// = new String[3];
 	        	
-	        	//clang-5.0 -emit-llvm -c -o sample.bc sample.c
-	        	compileCmdArray = new String[6];
-	        	compileCmdArray[0] = "clang-5.0";
-	        	compileCmdArray[1] = "-emit-llvm";
-	        	compileCmdArray[2] = "-c";
-	        	compileCmdArray[3] = "-o";
-	        	compileCmdArray[4] = genDir + "/grading.bc";
-	        	compileCmdArray[5] = genDir + "/grading.c";
-	        	String nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(tmpFile.getAbsolutePath());
-	        	System.out.println(nativeOutput);
 	        	
-	        	//opt-5.0 -load ../passes/llvm-pass-countloads/build/countloads/libCountLoadsPass.so -countloads sample.bc -o sample_count.bc
-	        	compileCmdArray = new String[7];
-	        	compileCmdArray[0] = "opt-5.0";
-	        	compileCmdArray[1] = "-load";
-	        	compileCmdArray[2] = genDir + "/../../../local_bin/performanceCounter/build/countloads/libCountLoadsPass.so";
-	        	compileCmdArray[3] = "-countloads";
-	        	compileCmdArray[4] = genDir + "/grading.bc";
-	        	compileCmdArray[5] = "-o";
-	        	compileCmdArray[6] = genDir + "/grading_count.bc";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, genDir, environmentalVars);
-	        	System.out.println(genDir.getAbsolutePath());
-	        	System.out.println(nativeOutput);
-	        	
-	        	//clang-5.0 -emit-llvm -O3 -c -o exithandler.bc exithandler.c
-	        	compileCmdArray[0] = "clang-5.0";
-	        	compileCmdArray[1] = "-emit-llvm";
-	        	compileCmdArray[2] = "-O3";
-	        	compileCmdArray[3] = "-c";
-	        	compileCmdArray[4] = "-o";
-	        	compileCmdArray[5] = genDir + "/exithandler.bc";
-	        	compileCmdArray[6] = genDir + "/exithandler.c";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(tmpFile.getAbsolutePath());
-	        	System.out.println(nativeOutput);
-	        	
-	        	//llvm-link-5.0 exithandler.bc sample_count.bc -o sample_linked.bc
-	        	compileCmdArray = new String[5];
-	        	compileCmdArray[0] = "llvm-link-5.0";
-	        	compileCmdArray[1] = genDir + "/exithandler.bc";
-	        	compileCmdArray[2] = genDir + "/grading_count.bc";
-	        	compileCmdArray[3] = "-o";
-	        	compileCmdArray[4] = genDir + "/grading_count_linked.bc";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(tmpFile.getAbsolutePath());
-	        	System.out.println(nativeOutput);
-	        	
-	        	//llc-5.0 sample_linked.bc
-	        	compileCmdArray = new String[2];
-	        	compileCmdArray[0] = "llc-5.0";
-	        	compileCmdArray[1] = genDir + "/grading_count_linked.bc";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(tmpFile.getAbsolutePath());
-	        	System.out.println(nativeOutput);
-	        	
-	        	//clang-5.0 -O3 sample_linked.s -o sample_linked.out
-	        	compileCmdArray = new String[5];
-	        	compileCmdArray[0] = "clang-5.0";
-	        	compileCmdArray[1] = "-O3";
-	        	compileCmdArray[2] = genDir + "/grading_count_linked.s";
-	        	compileCmdArray[3] = "-o";
-	        	compileCmdArray[4] = genDir + "/grading.out";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(tmpFile.getAbsolutePath());
-	        	System.out.println(nativeOutput);
-	        	
-	        	/*
-	        	compileCmdArray = new String[3];
-	        	compileCmdArray[0] = "gcc";
-	        	compileCmdArray[1] = genDir + "/grading.c";
-	        	compileCmdArray[2] = "-o"+genDir+"/grading.out";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(tmpFile.getAbsolutePath());
-	        	System.out.println(compileCmdArray[2]);
-	        	System.out.println(nativeOutput);
-	        	*/
-	        	
-	        	//clang-5.0 -emit-llvm -c -o sample.bc sample.c
-	        	compileCmdArray = new String[6];
-	        	compileCmdArray[0] = "clang-5.0";
-	        	compileCmdArray[1] = "-emit-llvm";
-	        	compileCmdArray[2] = "-c";
-	        	compileCmdArray[3] = "-o";
-	        	compileCmdArray[4] = genDir + "/submitted.bc";
-	        	compileCmdArray[5] = genDir + "/submitted.c";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(tmpFile.getAbsolutePath());
-	        	System.out.println(nativeOutput);
-	        	
-	        	//opt-5.0 -load ../passes/llvm-pass-countloads/build/countloads/libCountLoadsPass.so -countloads sample.bc -o sample_count.bc
-	        	compileCmdArray = new String[7];
-	        	compileCmdArray[0] = "opt-5.0";
-	        	compileCmdArray[1] = "-load";
-	        	compileCmdArray[2] = genDir + "/../../../local_bin/performanceCounter/build/countloads/libCountLoadsPass.so";
-	        	compileCmdArray[3] = "-countloads";
-	        	compileCmdArray[4] = genDir + "/submitted.bc";
-	        	compileCmdArray[5] = "-o";
-	        	compileCmdArray[6] = genDir + "/submitted_count.bc";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, genDir, environmentalVars);
-	        	System.out.println(genDir.getAbsolutePath());
-	        	System.out.println(nativeOutput);
-	        	
-	        	//clang-5.0 -emit-llvm -O3 -c -o exithandler.bc exithandler.c
-	        	compileCmdArray[0] = "clang-5.0";
-	        	compileCmdArray[1] = "-emit-llvm";
-	        	compileCmdArray[2] = "-O3";
-	        	compileCmdArray[3] = "-c";
-	        	compileCmdArray[4] = "-o";
-	        	compileCmdArray[5] = genDir + "/exithandler.bc";
-	        	compileCmdArray[6] = genDir + "/exithandler.c";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(tmpFile.getAbsolutePath());
-	        	System.out.println(nativeOutput);
-	        	
-	        	//llvm-link-5.0 exithandler.bc sample_count.bc -o sample_linked.bc
-	        	compileCmdArray = new String[5];
-	        	compileCmdArray[0] = "llvm-link-5.0";
-	        	compileCmdArray[1] = genDir + "/exithandler.bc";
-	        	compileCmdArray[2] = genDir + "/submitted_count.bc";
-	        	compileCmdArray[3] = "-o";
-	        	compileCmdArray[4] = genDir + "/submitted_count_linked.bc";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(tmpFile.getAbsolutePath());
-	        	System.out.println(nativeOutput);
-	        	
-	        	//llc-5.0 sample_linked.bc
-	        	compileCmdArray = new String[2];
-	        	compileCmdArray[0] = "llc-5.0";
-	        	compileCmdArray[1] = genDir + "/submitted_count_linked.bc";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(tmpFile.getAbsolutePath());
-	        	System.out.println(nativeOutput);
-	        	
-	        	//clang-5.0 sample_linked.s -o sample_linked.out
-	        	compileCmdArray = new String[5];
-	        	compileCmdArray[0] = "clang-5.0";
-	        	compileCmdArray[1] = "-O3";
-	        	compileCmdArray[2] = genDir + "/submitted_count_linked.s";
-	        	compileCmdArray[3] = "-o";
-	        	compileCmdArray[4] = genDir + "/submitted.out";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(tmpFile.getAbsolutePath());
-	        	System.out.println(nativeOutput);
-	        	
-	        	/*
-	        	compileCmdArray = new String[3];
-	        	compileCmdArray[0] = "gcc";
-	        	compileCmdArray[1] = genDir + "/submitted.c";
-	        	compileCmdArray[2] = "-o"+genDir+"/submitted.out";
-	        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
-	        	System.out.println(nativeOutput);
-	        	*/
+	        	if(!isCompiledSubmission)
+	        	{
+		        	//clang-5.0 -emit-llvm -c -o sample.bc sample.c
+		        	compileCmdArray = new String[6];
+		        	compileCmdArray[0] = "clang-5.0";
+		        	compileCmdArray[1] = "-emit-llvm";
+		        	compileCmdArray[2] = "-c";
+		        	compileCmdArray[3] = "-o";
+		        	compileCmdArray[4] = genDir + "/grading.bc";
+		        	compileCmdArray[5] = genDir + "/grading.c";
+		        	String nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	//opt-5.0 -load ../passes/llvm-pass-countloads/build/countloads/libCountLoadsPass.so -countloads sample.bc -o sample_count.bc
+		        	compileCmdArray = new String[7];
+		        	compileCmdArray[0] = "opt-5.0";
+		        	compileCmdArray[1] = "-load";
+		        	compileCmdArray[2] = genDir + "/../../../local_bin/performanceCounter/build/countloads/libCountLoadsPass.so";
+		        	compileCmdArray[3] = "-countloads";
+		        	compileCmdArray[4] = genDir + "/grading.bc";
+		        	compileCmdArray[5] = "-o";
+		        	compileCmdArray[6] = genDir + "/grading_count.bc";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, genDir, environmentalVars);
+		        	System.out.println(genDir.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	//clang-5.0 -emit-llvm -O3 -c -o exithandler.bc exithandler.c
+		        	compileCmdArray[0] = "clang-5.0";
+		        	compileCmdArray[1] = "-emit-llvm";
+		        	compileCmdArray[2] = "-O3";
+		        	compileCmdArray[3] = "-c";
+		        	compileCmdArray[4] = "-o";
+		        	compileCmdArray[5] = genDir + "/exithandler.bc";
+		        	compileCmdArray[6] = genDir + "/exithandler.c";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	//llvm-link-5.0 exithandler.bc sample_count.bc -o sample_linked.bc
+		        	compileCmdArray = new String[5];
+		        	compileCmdArray[0] = "llvm-link-5.0";
+		        	compileCmdArray[1] = genDir + "/exithandler.bc";
+		        	compileCmdArray[2] = genDir + "/grading_count.bc";
+		        	compileCmdArray[3] = "-o";
+		        	compileCmdArray[4] = genDir + "/grading_count_linked.bc";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	//llc-5.0 sample_linked.bc
+		        	compileCmdArray = new String[2];
+		        	compileCmdArray[0] = "llc-5.0";
+		        	compileCmdArray[1] = genDir + "/grading_count_linked.bc";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	//clang-5.0 -O3 sample_linked.s -o sample_linked.out
+		        	compileCmdArray = new String[5];
+		        	compileCmdArray[0] = "clang-5.0";
+		        	compileCmdArray[1] = "-O3";
+		        	compileCmdArray[2] = genDir + "/grading_count_linked.s";
+		        	compileCmdArray[3] = "-o";
+		        	compileCmdArray[4] = genDir + "/grading.out";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	/*
+		        	compileCmdArray = new String[3];
+		        	compileCmdArray[0] = "gcc";
+		        	compileCmdArray[1] = genDir + "/grading.c";
+		        	compileCmdArray[2] = "-o"+genDir+"/grading.out";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(compileCmdArray[2]);
+		        	System.out.println(nativeOutput);
+		        	*/
+		        	
+		        	//clang-5.0 -emit-llvm -c -o sample.bc sample.c
+		        	compileCmdArray = new String[6];
+		        	compileCmdArray[0] = "clang-5.0";
+		        	compileCmdArray[1] = "-emit-llvm";
+		        	compileCmdArray[2] = "-c";
+		        	compileCmdArray[3] = "-o";
+		        	compileCmdArray[4] = genDir + "/submitted.bc";
+		        	compileCmdArray[5] = genDir + "/submitted.c";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	//opt-5.0 -load ../passes/llvm-pass-countloads/build/countloads/libCountLoadsPass.so -countloads sample.bc -o sample_count.bc
+		        	compileCmdArray = new String[7];
+		        	compileCmdArray[0] = "opt-5.0";
+		        	compileCmdArray[1] = "-load";
+		        	compileCmdArray[2] = genDir + "/../../../local_bin/performanceCounter/build/countloads/libCountLoadsPass.so";
+		        	compileCmdArray[3] = "-countloads";
+		        	compileCmdArray[4] = genDir + "/submitted.bc";
+		        	compileCmdArray[5] = "-o";
+		        	compileCmdArray[6] = genDir + "/submitted_count.bc";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, genDir, environmentalVars);
+		        	System.out.println(genDir.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	//clang-5.0 -emit-llvm -O3 -c -o exithandler.bc exithandler.c
+		        	compileCmdArray[0] = "clang-5.0";
+		        	compileCmdArray[1] = "-emit-llvm";
+		        	compileCmdArray[2] = "-O3";
+		        	compileCmdArray[3] = "-c";
+		        	compileCmdArray[4] = "-o";
+		        	compileCmdArray[5] = genDir + "/exithandler.bc";
+		        	compileCmdArray[6] = genDir + "/exithandler.c";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	//llvm-link-5.0 exithandler.bc sample_count.bc -o sample_linked.bc
+		        	compileCmdArray = new String[5];
+		        	compileCmdArray[0] = "llvm-link-5.0";
+		        	compileCmdArray[1] = genDir + "/exithandler.bc";
+		        	compileCmdArray[2] = genDir + "/submitted_count.bc";
+		        	compileCmdArray[3] = "-o";
+		        	compileCmdArray[4] = genDir + "/submitted_count_linked.bc";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	//llc-5.0 sample_linked.bc
+		        	compileCmdArray = new String[2];
+		        	compileCmdArray[0] = "llc-5.0";
+		        	compileCmdArray[1] = genDir + "/submitted_count_linked.bc";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	//clang-5.0 sample_linked.s -o sample_linked.out
+		        	compileCmdArray = new String[5];
+		        	compileCmdArray[0] = "clang-5.0";
+		        	compileCmdArray[1] = "-O3";
+		        	compileCmdArray[2] = genDir + "/submitted_count_linked.s";
+		        	compileCmdArray[3] = "-o";
+		        	compileCmdArray[4] = genDir + "/submitted.out";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+		        	/*
+		        	compileCmdArray = new String[3];
+		        	compileCmdArray[0] = "gcc";
+		        	compileCmdArray[1] = genDir + "/submitted.c";
+		        	compileCmdArray[2] = "-o"+genDir+"/submitted.out";
+		        	nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(nativeOutput);
+		        	*/
+	        	}
+	        	else
+	        	{
+	        		compileCmdArray = new String[5];
+		        	compileCmdArray[0] = "clang-5.0";
+		        	compileCmdArray[1] = "-O3";
+		        	compileCmdArray[2] = genDir + "/grading.c";
+		        	compileCmdArray[3] = "-o";
+		        	compileCmdArray[4] = genDir + "/grading.out";
+		        	String nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	//nativeOutput = nativeInterface.executeCommand(compileCmdArray, tmpFile, environmentalVars);
+		        	System.out.println(tmpFile.getAbsolutePath());
+		        	System.out.println(nativeOutput);
+		        	
+	        	}
 	        	
 	        	DBObj previousMap = (DBObj) gradeChallenge.get(0);
 	        	ArrayList testArgs = new ArrayList();
@@ -419,10 +458,28 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	        				int numArgs = testArgs.size();
     	    	        	System.out.println("Testing with " + numArgs + " args.");
     	    	        	
+    	    	        	int numSubmittedArgs = 0;
+    	    	        	//System.out.println(testArgs);
+    	    	        	for(int z=0; z<testArgs.size(); z++)
+    	    	        	{
+    	    	        		DBObj gradeObj = (DBObj) testArgs.get(z);
+    	    	        		//System.out.println("Got " + gradeObj.getAttributeNames());
+    	    	        		int origOnly = (int) gradeObj.getAttribute("orig_only");
+    	    	        		if(!(origOnly == 1))
+    	    	        		{
+    	    	        			numSubmittedArgs++;
+    	    	        		}
+    	    	        	}
+    	    	        	
+    	    	        	System.out.println(numArgs + " arguments for orig");
+    	    	        	System.out.println(numSubmittedArgs + " arguments for sub");
     	    	        	String[] runCmdArray = new String[numArgs + 5];
+    	    	        	String[] runCmdArraySubmitted = new String[numSubmittedArgs + 5];
     	    	        	
     	    	        	runCmdArray[0] = "firejail";
     	    	        	runCmdArray[1] = "--quiet";
+    	    	        	runCmdArraySubmitted[0] = "firejail";
+    	    	        	runCmdArraySubmitted[1] = "--quiet";
     	    	        	//runCmdArray[2] = "--whitelist="+genDir+"/submitted.out";
     	    	        	//runCmdArray[3] = "--read-write="+genDir+"/submitted.out";
     	    	        	//runCmdArray[2] = "--noprofile";
@@ -430,11 +487,15 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
     	    	        	//runCmdArray[4] = "--whitelist="+genDir+"/submitted.out";
     	    	        	runCmdArray[3] = "--overlay-tmpfs";
     	    	        	runCmdArray[2] = "--net=none";
+    	    	        	runCmdArraySubmitted[3] = "--overlay-tmpfs";
+    	    	        	runCmdArraySubmitted[2] = "--net=none";
     	    	        	//runCmdArray[3] = "--blacklist=/";
     	    	        	//runCmdArray[2] = "--noblacklist="+genDir+"/submitted.out";
+    	    	        	int submittedNum = 0;
 	        				for(int z=0; z<testArgs.size(); z++)
 	        				{
 	        					DBObj gradeObj = (DBObj) testArgs.get(z);
+	        					int origOnly = (int) gradeObj.getAttribute("orig_only");
 	        					//System.out.println(gradeObj.attributes);
 	        					String value = (String) gradeObj.getAttribute("arg_value");
 	    	        			if(value == null || value.isEmpty())
@@ -462,6 +523,12 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        				}
 	    	        			}
 	    	        			runCmdArray[5+z] = value;
+	    	        			if(!(origOnly == 1))
+    	    	        		{
+	    	        				runCmdArraySubmitted[5+submittedNum] = value;
+    	    	        			submittedNum++;
+    	    	        		}
+	    	        			
 	        				}
 	        				runCmdArray[4] = genDir+"/grading.out";
 	    	        		
@@ -484,8 +551,8 @@ public class ChallengeDeobfuscatedSubmissionServlet extends HttpServlet
 	    	        		
 	    	        		String gradingOutput = nativeInterface.executeCommand(runCmdArray, tmpFile, environmentalVars, 500000000, outputForce);
 	    	        		
-	    	        		runCmdArray[4] = genDir+"/submitted.out";
-	    	        		String submittedOutput = nativeInterface.executeCommand(runCmdArray, tmpFile, environmentalVars, 500000000, outputForce);
+	    	        		runCmdArraySubmitted[4] = genDir+"/submitted.out";
+	    	        		String submittedOutput = nativeInterface.executeCommand(runCmdArraySubmitted, tmpFile, environmentalVars, 500000000, outputForce);
 	    	        		
 	    	        		//System.out.println(gradingOutput);
 	    	        		

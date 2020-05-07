@@ -219,6 +219,7 @@
         			|| tmp.equals("cachedOriginal")
         			|| tmp.equals("cachedObfuscated")
         			|| tmp.equals("cachedGrading")
+        			|| tmp.equals("is_compiled")
         			|| tmp.equals("ctf_points"))
         	{
         		keys.remove(x);
@@ -631,6 +632,7 @@
             			|| tmp.equals("cachedOriginal")
             			|| tmp.equals("cachedObfuscated")
             			|| tmp.equals("cachedGrading")
+            			|| tmp.equals("is_compiled")
             			|| tmp.equals("ctf_points"))
             	{
             		keys.remove(x);

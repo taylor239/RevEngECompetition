@@ -68,6 +68,7 @@ public class ChallengeObfuscatedFileServer extends HttpServlet {
 			session.setAttribute("user", myUser);
 		}
 		
+		myUser = (User) session.getAttribute("user");
 		
 		ArrayList myChallengesFull = myConnector.getChallenge((String)request.getParameter("challengeName"), (String)myUser.getAttribute("email"));
         ArrayList myChallenges = new ArrayList();
