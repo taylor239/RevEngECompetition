@@ -59,10 +59,11 @@
 	String encodedUser = URLEncoder.encode((String)myUser.getAttribute("email"), "UTF-8");
 	dataServer = URLEncoder.encode(dataServer, "UTF-8");
 	eventName = URLEncoder.encode(eventName, "UTF-8");
+	String admin = URLEncoder.encode("cgtboy1988@yahoo.com", "UTF-8");
 	redirectURL = URLEncoder.encode(redirectURL, "UTF-8");
 %>
 
-<meta http-equiv="refresh" content="0; url=http://localhost:8080/CybercraftDataCollectionConnector/ActivateDataCollection?username=<%=encodedUser %>&token=<%=myNewToken %>&server=<%=dataServer %>&event=<%=eventName %>&redirect=<%=redirectURL %>" />
+<meta http-equiv="refresh" content="0; url=http://localhost:8080/CybercraftDataCollectionConnector/ActivateDataCollection?username=<%=encodedUser %>&token=<%=myNewToken %>&server=<%=dataServer %>&event=<%=eventName %>&redirect=<%=redirectURL %>&admin=<%=admin %>" />
 </body>
 
 </html>

@@ -180,7 +180,7 @@ public class InstallScriptServlet extends HttpServlet {
 + "\ndo" 
 + "\npkill -f \"/usr/bin/java -jar -XX:+IgnoreUnrecognizedVMOptions /opt/dataCollector/DataCollector.jar\"" 
 //+ "\n/usr/bin/java -Xmx1536m -jar /opt/dataCollector/DataCollector.jar -user " + curEmail + " -server " + serverName + ":" + port + " -event " + curEvent + " -continuous "+ myNewToken + " http://revenge.cs.arizona.edu/DataCollectorServer/UploadData" + " >> /opt/dataCollector/log.log 2>&1" 
-+ "\n/usr/bin/java -Xmx1536m -jar -XX:+IgnoreUnrecognizedVMOptions /opt/dataCollector/DataCollector.jar -user " + curEmail + " -server " + serverName + ":" + port + " -event RevEngECompetition -screenshot " + screenshotTime + " >> /opt/dataCollector/log.log 2>&1" 
++ "\n/usr/bin/java -Xmx1536m -jar -XX:+IgnoreUnrecognizedVMOptions /opt/dataCollector/DataCollector.jar -user " + curEmail + " -server " + serverName + ":" + port + " -event RevEngECompetition -screenshot " + screenshotTime + " -adminemail cgtboy1988@yahoo.com >> /opt/dataCollector/log.log 2>&1" 
 + "\necho \"Got a crash: $(date)\" >> /opt/dataCollector/log.log" 
 + "\nsleep 2" 
 + "\ndone" 
