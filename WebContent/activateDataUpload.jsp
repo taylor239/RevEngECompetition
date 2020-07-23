@@ -49,7 +49,7 @@
 	{
 		e.printStackTrace();
 	}
-	String dataServer = "http://revenge.cs.arizona.edu/DataCollectorServer/UploadData";
+	String dataServer = "ws://revenge.cs.arizona.edu/DataCollectorServer/UploadData";
 	String urlRedirect = (String)session.getAttribute("redirect");
 	if(urlRedirect != null && !urlRedirect.equals(""))
 	{
