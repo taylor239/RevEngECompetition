@@ -22,7 +22,7 @@
 		{
 			System.out.println("1");
 			myNewToken = UUID.randomUUID().toString();
-			String verifierURL = "http://localhost:8080/DataCollectorServer/TokenStatus?username=" + myUser.getAttribute("email") + "&token=" + myNewToken + "&verifier=for_revenge&event=" + eventName;
+			String verifierURL = "http://localhost:8080/DataCollectorServer/openDataCollection/TokenStatus?username=" + myUser.getAttribute("email") + "&token=" + myNewToken + "&verifier=for_revenge&event=" + eventName;
 			System.out.println("2");
 			URL myURL = new URL(verifierURL);
 			System.out.println("3");
@@ -39,7 +39,7 @@
 			}
 		}
 		
-		String addTokenURL = "http://localhost:8080/DataCollectorServer/AddToken?username=" + myUser.getAttribute("email") + "&token=" + myNewToken + "&verifier=for_revenge&event=" + eventName;
+		String addTokenURL = "http://localhost:8080/DataCollectorServer/openDataCollection/AddToken?username=" + myUser.getAttribute("email") + "&token=" + myNewToken + "&verifier=for_revenge&event=" + eventName;
 		URL myURL = new URL(addTokenURL);
 		InputStream in = myURL.openStream();
 		String reply = org.apache.commons.io.IOUtils.toString(in);
