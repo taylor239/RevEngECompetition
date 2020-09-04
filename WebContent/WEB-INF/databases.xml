@@ -1,8 +1,8 @@
 <databaselist>
-<database id="jdbc:mysql://localhost:3306/tigress_challenge_competition?autoReconnect=true">
-	<address>jdbc:mysql://localhost:3306/tigress_challenge_competition?autoReconnect=true</address>
-	<username>pillar</username>
-	<password>e6Zpf3vDL44GuVcv</password>
+<database id="jdbc:mysql://localhost:3306/tigress_challenge_competition?autoReconnect=true&amp;serverTimezone=UTC">
+	<address>jdbc:mysql://localhost:3306/tigress_challenge_competition?autoReconnect=true&amp;serverTimezone=UTC</address>
+	<username>superuser</username>
+	<password>toor</password>
 	<driver>com.mysql.jdbc.Driver</driver>
 	<maxconnections>100</maxconnections>
 	<name>pillar</name>

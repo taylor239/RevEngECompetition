@@ -116,7 +116,10 @@ public class DatabaseConnector
 	public synchronized void disconnect(Connection myConnection)
 	{
 		try {
+			if(myConnection != null)
+			{
 			myConnection.close();
+			}
 		} catch (SQLException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
