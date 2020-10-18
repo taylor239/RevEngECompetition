@@ -1,45 +1,76 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <classpath>
 	<classpathentry kind="src" path="src"/>
-	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER/org.eclipse.jdt.internal.debug.ui.launcher.StandardVMType/java-11-openjdk-amd64">
+	<classpathentry exported="true" kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER/org.eclipse.jdt.internal.debug.ui.launcher.StandardVMType/java-11-openjdk-amd64">
 		<attributes>
 			<attribute name="module" value="true"/>
 			<attribute name="owner.project.facets" value="java"/>
 		</attributes>
 	</classpathentry>
-	<classpathentry kind="con" path="org.eclipse.jst.server.core.container/org.eclipse.jst.server.tomcat.runtimeTarget/Apache Tomcat v9.0">
+	<classpathentry exported="true" kind="con" path="org.eclipse.jst.server.core.container/org.eclipse.jst.server.tomcat.runtimeTarget/Apache Tomcat v9.0">
 		<attributes>
 			<attribute name="owner.project.facets" value="jst.web"/>
 		</attributes>
 	</classpathentry>
-	<classpathentry kind="con" path="org.eclipse.jst.j2ee.internal.web.container"/>
-	<classpathentry kind="con" path="org.eclipse.jst.j2ee.internal.module.container"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/gson-2.8.0.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-fileupload-1.2.2.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-io-2.4-javadoc.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-io-2.4-sources.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-io-2.4-test-sources.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-io-2.4-tests.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-io-2.4.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/dsn.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/imap.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/mail.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/mailapi.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/mysql-connector-java-5.0.8-bin.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/pop3.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/smtp.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-javadoc.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-sources.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-test-sources.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-tests.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-logging-1.2-javadoc.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-logging-1.2.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-javadoc.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-sources.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-test-sources.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-tests.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2.jar"/>
-	<classpathentry kind="lib" path="WebContent/WEB-INF/lib/mysql-connector-java-8.0.21.jar"/>
+	<classpathentry exported="true" kind="con" path="org.eclipse.jst.j2ee.internal.web.container"/>
+	<classpathentry exported="true" kind="con" path="org.eclipse.jst.j2ee.internal.module.container"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/annotations-api.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/catalina-ant.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/catalina-ha.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/catalina-ssi.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/catalina-storeconfig.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/catalina-tribes.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/catalina.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-javadoc.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-sources.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-test-sources.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0-tests.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-dbcp2-2.6.0.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-fileupload-1.2.2.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-io-2.4-javadoc.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-io-2.4-sources.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-io-2.4-test-sources.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-io-2.4-tests.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-io-2.4.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-logging-1.2-javadoc.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-logging-1.2.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-javadoc.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-sources.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-test-sources.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2-tests.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/commons-pool2-2.6.2.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/dsn.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/ecj-4.15.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/el-api.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/gson-2.8.0.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/imap.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/jasper-el.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/jasper.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/jaspic-api.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/jsp-api.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/mail.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/mailapi.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/mysql-connector-java-8.0.21.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/pop3.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/servlet-api.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/smtp.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-api.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-coyote.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-dbcp.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-i18n-cs.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-i18n-de.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-i18n-es.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-i18n-fr.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-i18n-ja.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-i18n-ko.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-i18n-pt-BR.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-i18n-ru.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-i18n-zh-CN.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-jdbc.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-jni.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-util-scan.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-util.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/tomcat-websocket.jar"/>
+	<classpathentry exported="true" kind="lib" path="WebContent/WEB-INF/lib/websocket-api.jar"/>
 	<classpathentry kind="output" path="build/classes"/>
 </classpath>
